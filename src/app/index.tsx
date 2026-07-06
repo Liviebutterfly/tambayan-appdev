@@ -294,7 +294,7 @@ export default function HomeScreen() {
         })}
       </View>
 
-      <FreedomWallModal visible={showWall} onClose={() => setShowWall(false)} />
+      <FreedomWallModal visible={showWall} onClose={() => setShowWall(false)} currentLocation={currentLocation} radiusKm={1} />
       <LeavePostModal visible={showLeave} onClose={() => setShowLeave(false)} onPosted={() => setShowWall(true)} />
     </SafeAreaView>
   );

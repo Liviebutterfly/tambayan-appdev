@@ -1,19 +1,38 @@
 import React, { useEffect, useState } from 'react';
-import { Modal, View, Text, FlatList, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
+import { Modal, View, Text, FlatList, StyleSheet, Pressable, ActivityIndicator, TextInput } from 'react-native';
 import { supabase } from '../../utils/supabase';
-import * as Location from 'expo-location';
-import {oneWeekAgo} from '../../utils/helpers';
-
+import { oneWeekAgo } from '../../utils/helpers';
 
 type Props = {
   visible: boolean;
   onClose: () => void;
+  currentLocation: { lat: number; lng: number } | null;
   radiusKm?: number;
+};
+
+type PostComment = {
+  id: string | number;
+  content?: string;
+  created_at?: string;
+  user_id?: string;
+};
+
+type PostItem = {
+  id: string | number;
+  content: string;
+  created_at?: string;
+  location?: string | null;
+  likes_count?: number;
+  like_count?: number;
+  likes?: number | Array<any> | null;
+  comments_count?: number;
+  comment_count?: number;
+  comments?: PostComment[] | null;
 };
 
 function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
   const toRad = (v: number) => (v * Math.PI) / 180;
-  const R = 6371; // km
+  const R = 6371;
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
   const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
@@ -21,104 +40,176 @@ function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
   return R * c;
 }
 
-export default function FreedomWallModal({ visible, onClose, radiusKm = 5 }: Props) {
-    const [loading, setLoading] = useState(false);
-    const [posts, setPosts] = useState<Array<any>>([]);
-    const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
+export default function FreedomWallModal({ visible, onClose, currentLocation, radiusKm = 1 }: Props) {
+  const [loading, setLoading] = useState(false);
+  const [posts, setPosts] = useState<PostItem[]>([]);
+  const [expandedPostIds, setExpandedPostIds] = useState<Record<string, boolean>>({});
+  const [commentsByPost, setCommentsByPost] = useState<Record<string, PostComment[]>>({});
+  const [commentsLoading, setCommentsLoading] = useState<Record<string, boolean>>({});
 
-    const getLocation = async () => {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') {
-            console.warn('Location permission not granted');
-            return null;
-        }
-        const location = await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.Highest,
-        });
-        return {
-            lat: location.coords.latitude,
-            lng: location.coords.longitude
-        }
-    };
-    useEffect(() => {
+  const getLikeCount = (post: PostItem) => {
+    if (typeof post.likes_count === 'number') return post.likes_count;
+    if (typeof post.like_count === 'number') return post.like_count;
+    if (typeof post.likes === 'number') return post.likes;
+    if (Array.isArray(post.likes)) return post.likes.length;
+    return 0;
+  };
+
+  const getCommentCount = (post: PostItem) => {
+    if (typeof post.comments_count === 'number') return post.comments_count;
+    if (typeof post.comment_count === 'number') return post.comment_count;
+    if (Array.isArray(post.comments)) return post.comments.length;
+    return 0;
+  };
+
+  const toggleComments = async (post: PostItem) => {
+    const postId = String(post.id);
+    const isExpanded = Boolean(expandedPostIds[postId]);
+    const nextExpanded = !isExpanded;
+
+    setExpandedPostIds((prev) => ({ ...prev, [postId]: nextExpanded }));
+
+    if (!nextExpanded) return;
+
+    if (commentsByPost[postId] !== undefined || commentsLoading[postId]) return;
+
+    setCommentsLoading((prev) => ({ ...prev, [postId]: true }));
+
+    const { data, error } = await supabase
+      .from('post_comments')
+      .select('*')
+      .eq('post_id', post.id)
+      .order('created_at', { ascending: true });
+
+    setCommentsLoading((prev) => ({ ...prev, [postId]: false }));
+
+    if (!error && data) {
+      setCommentsByPost((prev) => ({ ...prev, [postId]: data as PostComment[] }));
+      return;
+    }
+
+    const fallbackComments = Array.isArray(post.comments) ? post.comments : [];
+    setCommentsByPost((prev) => ({ ...prev, [postId]: fallbackComments }));
+  };
+
+  useEffect(() => {
     if (!visible) return;
 
     const load = async () => {
-        setLoading(true);
+      setLoading(true);
 
-        const currentLocation = await getLocation();
-        if (currentLocation) {
-            setLocation(currentLocation);
-        }
-
-        // fetch posts (filter client-side by distance)
-        const { data, error } = await supabase
-          .from('posts')
-          .select('*')
-          .gte('created_at', oneWeekAgo())
-          .order('created_at', { ascending: false }).limit(200);
+      if (!currentLocation) {
+        setPosts([]);
         setLoading(false);
+        return;
+      }
 
-        if (error) {
+      const { data, error } = await supabase
+        .from('posts')
+        .select('*')
+        .gte('created_at', oneWeekAgo())
+        .order('created_at', { ascending: false })
+        .limit(200);
+
+      setLoading(false);
+
+      if (error) {
         console.warn('fetch posts error', error);
-        return;
-        }
+        return setPosts([]);
+      }
 
-        if (!data) return setPosts([]);
+      if (!data) return setPosts([]);
 
-        if (!location) {
-        setPosts(data);
-        return;
-        }
+      const normalizedPosts = data.map((post: any) => ({
+        ...post,
+        likes_count: getLikeCount(post),
+        comments_count: getCommentCount(post),
+      }));
 
-        const filtered = data.filter((p: any) => {
-        if (!p.location) return false;
-        const parts = String(p.location).split(',');
+      const filtered = normalizedPosts.filter((post: PostItem) => {
+        if (!post.location) return false;
+        const parts = String(post.location).split(',');
         if (parts.length < 2) return false;
+
         const lat = parseFloat(parts[0]);
         const lng = parseFloat(parts[1]);
         if (Number.isNaN(lat) || Number.isNaN(lng)) return false;
-        const d = haversineDistance(location.lat, location.lng, lat, lng);
-        return d <= radiusKm;
-        });
 
-        setPosts(filtered);
+        const distance = haversineDistance(currentLocation.lat, currentLocation.lng, lat, lng);
+        return distance <= radiusKm;
+      });
+
+      setPosts(filtered);
     };
 
     load();
-    }, [visible]);
+  }, [visible, radiusKm, currentLocation]);
 
-    return (
+  return (
     <Modal visible={visible} animationType="slide" transparent>
-        <View style={styles.overlay}>
+      <View style={styles.overlay}>
         <View style={styles.card}>
-            <View style={styles.header}>
+          <View style={styles.header}>
             <Text style={styles.title}>Freedom Wall</Text>
             <Pressable onPress={onClose} style={styles.closeButton}>
-                <Text style={styles.closeText}>Close</Text>
+              <Text style={styles.closeText}>Close</Text>
             </Pressable>
-            </View>
+          </View>
 
-            {loading ? (
+          {loading ? (
             <ActivityIndicator color="#fff" style={{ marginTop: 16 }} />
-            ) : (
+          ) : (
             <FlatList
-                data={posts}
-                keyExtractor={(item) => String(item.id)}
-                renderItem={({ item }) => (
-                <View style={styles.post}>
+              data={posts}
+              keyExtractor={(item) => String(item.id)}
+              renderItem={({ item }) => {
+                const postId = String(item.id);
+                const isExpanded = Boolean(expandedPostIds[postId]);
+                const comments = commentsByPost[postId] ?? [];
+                const likeCount = getLikeCount(item);
+                const commentCount = getCommentCount(item);
+
+                return (
+                  <View style={styles.post}>
                     <Text style={styles.postContent}>{item.content}</Text>
                     <Text style={styles.postMeta}>{item.created_at ? new Date(item.created_at).toLocaleString() : ''}</Text>
-                </View>
-                )}
-                ListEmptyComponent={<Text style={{ color: '#9ca3af', marginTop: 12 }}>No posts nearby.</Text>}
+
+                    <View style={styles.postActions}>
+                      <Text style={styles.statsText}>❤️ {likeCount}</Text>
+                      <Pressable onPress={() => toggleComments(item)} style={styles.actionButton}>
+                        <Text style={styles.actionText}>💬 {commentCount} comments</Text>
+                      </Pressable>
+                    </View>
+
+                    {isExpanded ? (
+                      <View style={styles.commentsBox}>
+                        {commentsLoading[postId] ? (
+                          <ActivityIndicator color="#60a5fa" />
+                        ) : comments.length > 0 ? (
+                          comments.map((comment) => (
+                            <View key={String(comment.id)} style={styles.commentItem}>
+                              <Text style={styles.commentText}>{comment.content ?? 'Comment'}</Text>
+                              {comment.created_at ? (
+                                <Text style={styles.commentMeta}>{new Date(comment.created_at).toLocaleString()}</Text>
+                              ) : null}
+                            </View>
+                          ))
+                        ) : (
+                          <Text style={styles.emptyComments}>No comments yet.</Text>
+                        )}
+                      </View>
+                    ) : null}
+                  </View>
+                );
+              }}
+              ListEmptyComponent={<Text style={{ color: '#9ca3af', marginTop: 12 }}>No posts nearby in the last week.</Text>}
             />
-            )}
+          )}
         </View>
-        </View>
+      </View>
     </Modal>
-    );
-    }
+  );
+}
 
 const styles = StyleSheet.create({
   overlay: {
@@ -154,4 +245,44 @@ const styles = StyleSheet.create({
   },
   postContent: { color: '#f8fafc' },
   postMeta: { color: '#94a3b8', marginTop: 6, fontSize: 12 },
+  postActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  statsText: {
+    color: '#f8fafc',
+    fontSize: 13,
+  },
+  actionButton: {
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+  },
+  actionText: {
+    color: '#60a5fa',
+    fontWeight: '600',
+    fontSize: 13,
+  },
+  commentsBox: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#1f2937',
+  },
+  commentItem: {
+    paddingVertical: 6,
+  },
+  commentText: {
+    color: '#e5e7eb',
+  },
+  commentMeta: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  emptyComments: {
+    color: '#9ca3af',
+    fontSize: 12,
+  },
 });
