@@ -22,12 +22,6 @@ type PostItem = {
   content: string;
   created_at?: string;
   location?: string | null;
-  likes_count?: number;
-  like_count?: number;
-  likes?: number | Array<any> | null;
-  comments_count?: number;
-  comment_count?: number;
-  comments?: PostComment[] | null;
 };
 
 function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -46,21 +40,48 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
   const [expandedPostIds, setExpandedPostIds] = useState<Record<string, boolean>>({});
   const [commentsByPost, setCommentsByPost] = useState<Record<string, PostComment[]>>({});
   const [commentsLoading, setCommentsLoading] = useState<Record<string, boolean>>({});
+  // for the post likes
+  const [likedPost, setLikedPost] = useState<Record<string, boolean>>({});
 
-  const getLikeCount = (post: PostItem) => {
-    if (typeof post.likes_count === 'number') return post.likes_count;
-    if (typeof post.like_count === 'number') return post.like_count;
-    if (typeof post.likes === 'number') return post.likes;
-    if (Array.isArray(post.likes)) return post.likes.length;
+  const getLikeCount = async (post: PostItem) => {
+    const { data, error } = await supabase
+      .from('post_likes')
+      .select('*')
+      .eq('post_id', post.id)
+    if (data && !error) return data.length;
     return 0;
   };
 
-  const getCommentCount = (post: PostItem) => {
-    if (typeof post.comments_count === 'number') return post.comments_count;
-    if (typeof post.comment_count === 'number') return post.comment_count;
-    if (Array.isArray(post.comments)) return post.comments.length;
+  const getCommentCount = async (post: PostItem) => {
+    const { data, error } = await supabase
+      .from('post_comments')
+      .select('*')
+      .eq('post_id', post.id)
+    if (data && !error) return data.length;
     return 0;
   };
+
+  const getLikedPosts = async (posts: PostItem[]) => {
+    const {data: { session }} = await supabase.auth.getSession();
+    const { data, error} = await supabase
+      .from('post_likes') 
+      .select('*')
+      .eq('user_id', session?.user.id)
+      .in('post_id', posts.map(post => post.id));
+    if(data && !error) {
+      data.forEach(likes => {
+        setLikedPost(prev => ({ ...prev, [String(likes.post_id)]: true }));
+      });
+    }
+    return 0;
+  }
+
+  const toggleLike = async (post: PostItem) => {
+    const postId = String(post.id);
+    const isLiked = Boolean(likedPost[postId]);
+    const nextLiked = !isLiked;
+    setLikedPost(prev => ({ ...prev, [postId]: nextLiked }));
+  }
 
   const toggleComments = async (post: PostItem) => {
     const postId = String(post.id);
@@ -87,9 +108,6 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
       setCommentsByPost((prev) => ({ ...prev, [postId]: data as PostComment[] }));
       return;
     }
-
-    const fallbackComments = Array.isArray(post.comments) ? post.comments : [];
-    setCommentsByPost((prev) => ({ ...prev, [postId]: fallbackComments }));
   };
 
   useEffect(() => {
@@ -119,14 +137,8 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
       }
 
       if (!data) return setPosts([]);
-
-      const normalizedPosts = data.map((post: any) => ({
-        ...post,
-        likes_count: getLikeCount(post),
-        comments_count: getCommentCount(post),
-      }));
-
-      const filtered = normalizedPosts.filter((post: PostItem) => {
+    
+      const filtered = data.filter((post: PostItem) => {
         if (!post.location) return false;
         const parts = String(post.location).split(',');
         if (parts.length < 2) return false;
@@ -140,6 +152,7 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
       });
 
       setPosts(filtered);
+      getLikedPosts(filtered); 
     };
 
     load();
@@ -165,6 +178,8 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
               renderItem={({ item }) => {
                 const postId = String(item.id);
                 const isExpanded = Boolean(expandedPostIds[postId]);
+                const isLiked = Boolean(likedPost[postId]);
+
                 const comments = commentsByPost[postId] ?? [];
                 const likeCount = getLikeCount(item);
                 const commentCount = getCommentCount(item);
@@ -175,7 +190,14 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
                     <Text style={styles.postMeta}>{item.created_at ? new Date(item.created_at).toLocaleString() : ''}</Text>
 
                     <View style={styles.postActions}>
-                      <Text style={styles.statsText}>❤️ {likeCount}</Text>
+                      <Pressable onPress={() => toggleLike(item)} style={styles.actionButton}>
+                        {isLiked ? (
+                          <Text style={styles.statsText}>❤️</Text>
+                        ) : (
+                          <Text style={styles.statsText}>🤍</Text>
+                        )}
+                        <Text style={styles.statsText}> likes</Text>
+                      </Pressable>
                       <Pressable onPress={() => toggleComments(item)} style={styles.actionButton}>
                         <Text style={styles.actionText}>💬 {commentCount} comments</Text>
                       </Pressable>

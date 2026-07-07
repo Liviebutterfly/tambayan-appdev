@@ -34,3 +34,4 @@ export const getAvatarUrlForIndex = (index: number | null | undefined) => {
 
   return avatarAssetUrls[index];
 };
+
