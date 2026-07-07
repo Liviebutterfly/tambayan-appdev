@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Modal, View, Text, FlatList, StyleSheet, Pressable, ActivityIndicator, TextInput } from 'react-native';
+import { Modal, View, Text, FlatList, StyleSheet, Pressable, ActivityIndicator, TextInput, Image } from 'react-native';
 import { supabase } from '../../utils/supabase';
 import { oneWeekAgo } from '../../utils/helpers';
 
@@ -22,6 +22,8 @@ type PostItem = {
   content: string;
   created_at?: string;
   location?: string | null;
+  user_id?: string;
+  profiles?: { username?: string; avatar_url?: string; id?: string };
 };
 
 function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -42,45 +44,77 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
   const [commentsLoading, setCommentsLoading] = useState<Record<string, boolean>>({});
   // for the post likes
   const [likedPost, setLikedPost] = useState<Record<string, boolean>>({});
+  const [likeCounts, setLikeCounts] = useState<Record<string, number>>({});
+  const [commentCounts, setCommentCounts] = useState<Record<string, number>>({});
+  const [commentInputByPost, setCommentInputByPost] = useState<Record<string, string>>({});
+  const [commentsSubmitting, setCommentsSubmitting] = useState<Record<string, boolean>>({});
 
-  const getLikeCount = async (post: PostItem) => {
-    const { data, error } = await supabase
+  const fetchCountsAndLikes = async (posts: PostItem[]) => {
+    const postIds = posts.map((p) => p.id);
+    const { data: { session } } = await supabase.auth.getSession();
+
+    // fetch likes for these posts
+    const { data: likesData } = await supabase
       .from('post_likes')
       .select('*')
-      .eq('post_id', post.id)
-    if (data && !error) return data.length;
-    return 0;
-  };
+      .in('post_id', postIds);
 
-  const getCommentCount = async (post: PostItem) => {
-    const { data, error } = await supabase
-      .from('post_comments')
-      .select('*')
-      .eq('post_id', post.id)
-    if (data && !error) return data.length;
-    return 0;
-  };
-
-  const getLikedPosts = async (posts: PostItem[]) => {
-    const {data: { session }} = await supabase.auth.getSession();
-    const { data, error} = await supabase
-      .from('post_likes') 
-      .select('*')
-      .eq('user_id', session?.user.id)
-      .in('post_id', posts.map(post => post.id));
-    if(data && !error) {
-      data.forEach(likes => {
-        setLikedPost(prev => ({ ...prev, [String(likes.post_id)]: true }));
+    const likesMap: Record<string, number> = {};
+    const likedMap: Record<string, boolean> = {};
+    if (likesData) {
+      likesData.forEach((l: any) => {
+        const pid = String(l.post_id);
+        likesMap[pid] = (likesMap[pid] ?? 0) + 1;
+        if (session?.user.id && l.user_id === session.user.id) likedMap[pid] = true;
       });
     }
-    return 0;
-  }
+
+    setLikeCounts((prev) => ({ ...prev, ...likesMap }));
+    setLikedPost((prev) => ({ ...prev, ...likedMap }));
+
+    // fetch comments counts for these posts
+    const { data: commentsData } = await supabase
+      .from('post_comments')
+      .select('*')
+      .in('post_id', postIds);
+
+    const commentsMap: Record<string, number> = {};
+    if (commentsData) {
+      commentsData.forEach((c: any) => {
+        const pid = String(c.post_id);
+        commentsMap[pid] = (commentsMap[pid] ?? 0) + 1;
+      });
+    }
+    setCommentCounts((prev) => ({ ...prev, ...commentsMap }));
+  };
 
   const toggleLike = async (post: PostItem) => {
     const postId = String(post.id);
     const isLiked = Boolean(likedPost[postId]);
     const nextLiked = !isLiked;
-    setLikedPost(prev => ({ ...prev, [postId]: nextLiked }));
+
+    // optimistic UI update
+    setLikedPost((prev) => ({ ...prev, [postId]: nextLiked }));
+    setLikeCounts((prev) => ({ ...prev, [postId]: (prev[postId] ?? 0) + (nextLiked ? 1 : -1) }));
+
+    const { data: { session } } = await supabase.auth.getSession();
+    const userId = session?.user.id;
+    if (!userId) return;
+
+    if (nextLiked) {
+      const { error } = await supabase.from('post_likes').insert({ post_id: post.id, user_id: userId });
+      if (error) {
+        // rollback on error
+        setLikedPost((prev) => ({ ...prev, [postId]: isLiked }));
+        setLikeCounts((prev) => ({ ...prev, [postId]: (prev[postId] ?? 1) - 1 }));
+      }
+    } else {
+      const { error } = await supabase.from('post_likes').delete().match({ post_id: post.id, user_id: userId });
+      if (error) {
+        setLikedPost((prev) => ({ ...prev, [postId]: isLiked }));
+        setLikeCounts((prev) => ({ ...prev, [postId]: (prev[postId] ?? 0) + 1 }));
+      }
+    }
   }
 
   const toggleComments = async (post: PostItem) => {
@@ -110,6 +144,36 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
     }
   };
 
+  const addComment = async (post: PostItem) => {
+    const postId = String(post.id);
+    const text = (commentInputByPost[postId] ?? '').trim();
+    if (!text) return;
+
+    const { data: { session } } = await supabase.auth.getSession();
+    const userId = session?.user.id;
+    if (!userId) return;
+
+    setCommentsSubmitting((prev) => ({ ...prev, [postId]: true }));
+
+    const { data, error } = await supabase
+      .from('post_comments')
+      .insert({ post_id: post.id, content: text, user_id: userId })
+      .select('*');
+
+    setCommentsSubmitting((prev) => ({ ...prev, [postId]: false }));
+
+    if (error) {
+      console.warn('add comment error', error);
+      return;
+    }
+
+    const newComment = Array.isArray(data) ? data[0] : data;
+
+    setCommentsByPost((prev) => ({ ...prev, [postId]: [...(prev[postId] ?? []), newComment] }));
+    setCommentCounts((prev) => ({ ...prev, [postId]: (prev[postId] ?? 0) + 1 }));
+    setCommentInputByPost((prev) => ({ ...prev, [postId]: '' }));
+  };
+
   useEffect(() => {
     if (!visible) return;
 
@@ -124,7 +188,7 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
 
       const { data, error } = await supabase
         .from('posts')
-        .select('*')
+        .select('*, profiles(username, avatar_url)')
         .gte('created_at', oneWeekAgo())
         .order('created_at', { ascending: false })
         .limit(200);
@@ -152,7 +216,7 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
       });
 
       setPosts(filtered);
-      getLikedPosts(filtered); 
+      await fetchCountsAndLikes(filtered);
     };
 
     load();
@@ -181,26 +245,43 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
                 const isLiked = Boolean(likedPost[postId]);
 
                 const comments = commentsByPost[postId] ?? [];
-                const likeCount = getLikeCount(item);
-                const commentCount = getCommentCount(item);
+                const likeCount = likeCounts[postId] ?? 0;
+                const commentCount = commentCounts[postId] ?? 0;
+
+                const avatarUrl = item.profiles?.avatar_url ?? null;
+                const username = item.profiles?.username ?? item.user_id ?? 'Anon';
 
                 return (
                   <View style={styles.post}>
-                    <Text style={styles.postContent}>{item.content}</Text>
-                    <Text style={styles.postMeta}>{item.created_at ? new Date(item.created_at).toLocaleString() : ''}</Text>
-
-                    <View style={styles.postActions}>
-                      <Pressable onPress={() => toggleLike(item)} style={styles.actionButton}>
-                        {isLiked ? (
-                          <Text style={styles.statsText}>❤️</Text>
+                    <View style={styles.postRow}>
+                      <View style={styles.avatarWrapper}>
+                        {avatarUrl ? (
+                          <Image source={{ uri: avatarUrl }} style={styles.avatar} />
                         ) : (
-                          <Text style={styles.statsText}>🤍</Text>
+                          <View style={styles.avatarPlaceholder}>
+                            <Text style={styles.avatarInitial}>{String(username).charAt(0).toUpperCase()}</Text>
+                          </View>
                         )}
-                        <Text style={styles.statsText}> likes</Text>
-                      </Pressable>
-                      <Pressable onPress={() => toggleComments(item)} style={styles.actionButton}>
-                        <Text style={styles.actionText}>💬 {commentCount} comments</Text>
-                      </Pressable>
+                      </View>
+
+                      <View style={styles.postBody}>
+                        <Text style={styles.username}>{username}</Text>
+                        <Text style={styles.postContent}>{item.content}</Text>
+                        <Text style={styles.postMeta}>{item.created_at ? new Date(item.created_at).toLocaleString() : ''}</Text>
+
+                        <View style={styles.postActions}>
+                          <Pressable onPress={() => toggleLike(item)} style={styles.actionButton}>
+                            {isLiked ? (
+                              <Text style={styles.statsText}>❤️ {likeCount} likes</Text>
+                            ) : (
+                              <Text style={styles.statsText}>🤍 {likeCount} likes</Text>
+                            )}
+                          </Pressable>
+                          <Pressable onPress={() => toggleComments(item)} style={styles.actionButton}>
+                            <Text style={styles.actionText}>💬 {commentCount} comments</Text>
+                          </Pressable>
+                        </View>
+                      </View>
                     </View>
 
                     {isExpanded ? (
@@ -209,7 +290,7 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
                           <ActivityIndicator color="#60a5fa" />
                         ) : comments.length > 0 ? (
                           comments.map((comment) => (
-                            <View key={String(comment.id)} style={styles.commentItem}>
+                            <View key={String(comment.id)} style={styles.commentItemIndented}>
                               <Text style={styles.commentText}>{comment.content ?? 'Comment'}</Text>
                               {comment.created_at ? (
                                 <Text style={styles.commentMeta}>{new Date(comment.created_at).toLocaleString()}</Text>
@@ -219,6 +300,19 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
                         ) : (
                           <Text style={styles.emptyComments}>No comments yet.</Text>
                         )}
+
+                        <View style={styles.commentInputRow}>
+                          <TextInput
+                            value={commentInputByPost[postId] ?? ''}
+                            onChangeText={(t) => setCommentInputByPost((prev) => ({ ...prev, [postId]: t }))}
+                            placeholder="Write a comment..."
+                            placeholderTextColor="#9ca3af"
+                            style={styles.commentInput}
+                          />
+                          <Pressable onPress={() => addComment(item)} style={styles.sendButton} disabled={commentsSubmitting[postId]}>
+                            <Text style={{ color: '#fff' }}>{commentsSubmitting[postId] ? '...' : 'Send'}</Text>
+                          </Pressable>
+                        </View>
                       </View>
                     ) : null}
                   </View>
@@ -243,8 +337,10 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: '#0b1220',
     borderRadius: 12,
-    maxHeight: '80%',
+    maxHeight: '92%',
     padding: 12,
+    marginTop: 40,
+    marginBottom: 56,
   },
   header: {
     flexDirection: 'row',
@@ -265,6 +361,13 @@ const styles = StyleSheet.create({
     backgroundColor: '#0f1724',
     marginBottom: 8,
   },
+  postRow: { flexDirection: 'row', alignItems: 'flex-start' },
+  avatarWrapper: { width: 44, marginRight: 10 },
+  avatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#374151' },
+  avatarPlaceholder: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#374151', justifyContent: 'center', alignItems: 'center' },
+  avatarInitial: { color: '#fff', fontWeight: '700' },
+  postBody: { flex: 1 },
+  username: { color: '#fff', fontWeight: '700', marginBottom: 4 },
   postContent: { color: '#f8fafc' },
   postMeta: { color: '#94a3b8', marginTop: 6, fontSize: 12 },
   postActions: {
@@ -295,6 +398,16 @@ const styles = StyleSheet.create({
   commentItem: {
     paddingVertical: 6,
   },
+  commentItemIndented: {
+    paddingVertical: 6,
+    marginLeft: 54,
+    borderLeftWidth: 2,
+    borderLeftColor: '#111827',
+    paddingLeft: 10,
+  },
+  commentInputRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8, marginLeft: 54 },
+  commentInput: { flex: 1, backgroundColor: '#071025', color: '#fff', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, marginRight: 8 },
+  sendButton: { backgroundColor: '#2563eb', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8 },
   commentText: {
     color: '#e5e7eb',
   },
