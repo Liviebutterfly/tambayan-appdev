@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import * as Location from 'expo-location';
 import { supabase } from '../../utils/supabase';
-import { avatarOptions, getAvatarIndexFromUrl, oneWeekAgo, getAvatarUrlForIndex } from '../../utils/helpers';
+import { avatarOptions, getAvatarIndexFromUrl, oneWeekAgo, getAvatarUrlForIndex, haversineDistance } from '../../utils/helpers';
 import FreedomWallModal from '../components/FreedomWallModal';
 import LeavePostModal from '../components/LeavePostModal';
 import Profile from '../components/Profile';
@@ -56,17 +56,27 @@ export default function HomeScreen() {
       if (!userId) return;
       const { data, error } = await supabase
         .from('posts')
-        .select('id', { count: 'exact' })
-        .eq('user_id', userId)
+        .select('location')
         .gte('created_at', oneWeekAgo());
       if (!error) {
-        setTambayCount(data.length);
+        let tambayCount = 0;
+        data.forEach(tambay => {
+          if (tambay.location){
+            const parts = String(tambay.location).split(',');
+            const lat = parseFloat(parts[0]);
+            const lng = parseFloat(parts[1]);
+            if(parts.length===2&&currentLocation && !isNaN(lat) && !isNaN(lng)){
+              if (haversineDistance(currentLocation.lat, currentLocation.lng, lat, lng) <= 1) tambayCount++;
+            }
+          }
+        });
+        setTambayCount(tambayCount);
       }
     };
 
     loadProfileAvatar();
     loadTambayCount();
-  }, [activeTab, userId]);
+  }, [activeTab, userId, currentLocation]);
 
   const mapHtml = useMemo(() => {
     const lat = currentLocation?.lat ?? defaultCenter.lat;
@@ -138,8 +148,6 @@ export default function HomeScreen() {
         router.replace('/login');
         return;
       }
-
-      
       setEmail(session.user.email ?? '');
       setUserId(session.user.id);
       setLoading(false);
@@ -159,6 +167,8 @@ export default function HomeScreen() {
     });
 
     return () => {
+      // this is like the cleanup function 
+      // runs when homescreen (this screen) unmounts
       mounted = false;
       authListener.subscription.unsubscribe();
     };

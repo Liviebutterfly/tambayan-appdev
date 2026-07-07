@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Modal, View, Text, FlatList, StyleSheet, Pressable, ActivityIndicator, TextInput, Image } from 'react-native';
 import { supabase } from '../../utils/supabase';
-import { oneWeekAgo } from '../../utils/helpers';
+import { oneWeekAgo, avatarOptions, getAvatarIndexFromUrl, haversineDistance} from '../../utils/helpers';
 
 type Props = {
   visible: boolean;
@@ -26,15 +26,6 @@ type PostItem = {
   profiles?: { username?: string; avatar_url?: string; id?: string };
 };
 
-function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
-  const toRad = (v: number) => (v * Math.PI) / 180;
-  const R = 6371;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
 
 export default function FreedomWallModal({ visible, onClose, currentLocation, radiusKm = 1 }: Props) {
   const [loading, setLoading] = useState(false);
@@ -49,7 +40,11 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
   const [commentInputByPost, setCommentInputByPost] = useState<Record<string, string>>({});
   const [commentsSubmitting, setCommentsSubmitting] = useState<Record<string, boolean>>({});
 
-  const fetchCountsAndLikes = async (posts: PostItem[]) => {
+  //for setting avatar index for each post
+  const [postAvatar, setPostAvatar] = useState<Record<string, number>>({});
+
+
+  const fetchCounts_Likes_Avatars = async (posts: PostItem[]) => {
     const postIds = posts.map((p) => p.id);
     const { data: { session } } = await supabase.auth.getSession();
 
@@ -86,6 +81,16 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
       });
     }
     setCommentCounts((prev) => ({ ...prev, ...commentsMap }));
+    
+    // fetch avatars for users in posts
+
+    const avatarsIndexMap: Record<string, number> = {};
+    posts.forEach((a: any) => {
+      const uid = String(a.user_id);
+      if(!(uid in avatarsIndexMap))
+        avatarsIndexMap[uid] = getAvatarIndexFromUrl(a.profiles?.avatar_url ?? null) ?? 0;
+    });
+    setPostAvatar((prev) => ({ ...prev, ...avatarsIndexMap }));
   };
 
   const toggleLike = async (post: PostItem) => {
@@ -216,7 +221,7 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
       });
 
       setPosts(filtered);
-      await fetchCountsAndLikes(filtered);
+      await fetchCounts_Likes_Avatars(filtered);
     };
 
     load();
@@ -248,20 +253,24 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
                 const likeCount = likeCounts[postId] ?? 0;
                 const commentCount = commentCounts[postId] ?? 0;
 
-                const avatarUrl = item.profiles?.avatar_url ?? null;
                 const username = item.profiles?.username ?? item.user_id ?? 'Anon';
+              
+                const index = postAvatar[String(item.user_id)] 
 
                 return (
+  
                   <View style={styles.post}>
                     <View style={styles.postRow}>
+      
                       <View style={styles.avatarWrapper}>
-                        {avatarUrl ? (
-                          <Image source={{ uri: avatarUrl }} style={styles.avatar} />
+                        {index !== -1 ? (
+                          <Image source={avatarOptions[index]} style={styles.avatar}/>
                         ) : (
                           <View style={styles.avatarPlaceholder}>
                             <Text style={styles.avatarInitial}>{String(username).charAt(0).toUpperCase()}</Text>
                           </View>
                         )}
+                  
                       </View>
 
                       <View style={styles.postBody}>
