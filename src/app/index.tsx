@@ -8,6 +8,7 @@ import { supabase } from '../../utils/supabase';
 import { avatarOptions, getAvatarIndexFromUrl, oneWeekAgo, getAvatarUrlForIndex, haversineDistance } from '../../utils/helpers';
 import FreedomWallModal from '../components/FreedomWallModal';
 import LeavePostModal from '../components/LeavePostModal';
+import MemoryMapView from '../components/MemoryMapView';
 import Profile from '../components/Profile';
 
 type TabKey = 'map' | 'profile';
@@ -28,6 +29,8 @@ export default function HomeScreen() {
   const [locationName, setLocationName] = useState('Finding your area...');
   const [showWall, setShowWall] = useState(false);
   const [showLeave, setShowLeave] = useState(false);
+  const [showMemories, setShowMemories] = useState(false);
+  const [memoryReturnTab, setMemoryReturnTab] = useState<TabKey>('map');
   const [selectedAvatar, setSelectedAvatar] = useState<number | null>(null);
   const [tambayCount, setTambayCount] = useState(0);
 
@@ -239,6 +242,16 @@ export default function HomeScreen() {
     router.replace('/login');
   };
 
+  const openMemories = (origin: TabKey) => {
+    setMemoryReturnTab(origin);
+    setShowMemories(true);
+  };
+
+  const closeMemories = () => {
+    setShowMemories(false);
+    setActiveTab(memoryReturnTab);
+  };
+
   const handlePostSuccess = () => {
     setShowWall(true);
     setTambayCount((prev) => prev + 1);
@@ -252,10 +265,18 @@ export default function HomeScreen() {
     );
   }
 
+  if (showMemories) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <MemoryMapView visible={true} onClose={closeMemories} userId={userId} currentLocation={currentLocation} />
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container}>
       {activeTab === 'profile' ? (
-        <Profile userId={userId!} email={email} onLogout={handleLogout} />
+        <Profile userId={userId!} email={email} onLogout={handleLogout} onOpenMemoryMap={() => openMemories('profile')} />
       ) : (
         <View style={styles.mapScreen}>
           <WebView
@@ -288,6 +309,9 @@ export default function HomeScreen() {
               </TouchableOpacity>
               <TouchableOpacity style={styles.postButton} onPress={() => setShowLeave(true)}>
                 <Text style={styles.cardText}>Leave a mark!</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.memoriesButton} onPress={() => openMemories('map')}>
+                <Text style={styles.cardText}>View memories</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -478,6 +502,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     width: '50%',
     minHeight: 78,
+  },
+  memoriesButton: {
+    backgroundColor: '#ffdbb7',
+    borderRadius: 15,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+    minHeight: 48,
   },
   tambayCountText: {
     color: '#000',

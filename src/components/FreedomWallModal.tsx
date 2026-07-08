@@ -3,6 +3,17 @@ import { Modal, View, Text, FlatList, StyleSheet, Pressable, ActivityIndicator, 
 import { supabase } from '../../utils/supabase';
 import { oneWeekAgo, avatarOptions, getAvatarIndexFromUrl, haversineDistance} from '../../utils/helpers';
 
+const getDeterministicAvatarIndex = (userId?: string | null) => {
+  if (!userId) return 0;
+
+  let hash = 0;
+  for (let i = 0; i < userId.length; i += 1) {
+    hash = (hash * 31 + userId.charCodeAt(i)) % avatarOptions.length;
+  }
+
+  return hash;
+};
+
 type Props = {
   visible: boolean;
   onClose: () => void;
@@ -12,11 +23,20 @@ type Props = {
   readOnly?: boolean;
 };
 
+type ProfileInfo = {
+  id?: string;
+  username?: string;
+  avatar_url?: string;
+};
+
+type ProfileRelation = ProfileInfo | ProfileInfo[] | null | undefined;
+
 type PostComment = {
   id: string | number;
   content?: string;
   created_at?: string;
   user_id?: string;
+  profiles?: ProfileRelation;
 };
 
 type PostItem = {
@@ -27,9 +47,8 @@ type PostItem = {
   user_id?: string;
   mood?: string | null;
   image_url?: string | null;
-  profiles?: { username?: string; avatar_url?: string; id?: string };
+  profiles?: ProfileRelation;
 };
-
 
 export default function FreedomWallModal({ visible, onClose, currentLocation, radiusKm = 1, filterUserId, readOnly = false }: Props) {
   const [loading, setLoading] = useState(false);
@@ -45,6 +64,7 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
   const [commentsSubmitting, setCommentsSubmitting] = useState<Record<string, boolean>>({});
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [deletingPostId, setDeletingPostId] = useState<string | null>(null);
+  const [deletingCommentId, setDeletingCommentId] = useState<string | null>(null);
 
   //for setting avatar index for each post
   const [postAvatar, setPostAvatar] = useState<Record<string, number>>({});
@@ -60,6 +80,70 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
     if (!mood) return '';
     return mood.charAt(0).toUpperCase() + mood.slice(1);
   };
+
+  const normalizeProfile = (profile: unknown): ProfileInfo | undefined => {
+    if (!profile) return undefined;
+
+    if (Array.isArray(profile)) {
+      const [firstProfile] = profile;
+      return firstProfile ? normalizeProfile(firstProfile) : undefined;
+    }
+
+    if (typeof profile !== 'object') return undefined;
+
+    const { id, username, avatar_url } = profile as Record<string, any>;
+    if (!id && !username && !avatar_url) return undefined;
+
+    return {
+      id: id ? String(id) : undefined,
+      username: username ?? undefined,
+      avatar_url: avatar_url ?? undefined,
+    };
+  };
+
+  const fetchProfilesForUserIds = async (userIds: Array<string | null | undefined>) => {
+    const uniqueUserIds = Array.from(new Set(userIds.filter(Boolean) as string[]));
+    if (!uniqueUserIds.length) return {} as Record<string, ProfileInfo>;
+
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return {} as Record<string, ProfileInfo>;
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, username, avatar_url')
+      .in('id', uniqueUserIds);
+
+    if (error || !data) return {} as Record<string, ProfileInfo>;
+
+    return data.reduce((acc, profile: any) => {
+      if (profile?.id) {
+        acc[String(profile.id)] = {
+          id: String(profile.id),
+          username: profile.username ?? undefined,
+          avatar_url: profile.avatar_url ?? undefined,
+        };
+      }
+      return acc;
+    }, {} as Record<string, ProfileInfo>);
+  };
+
+  const enrichItemsWithProfiles = <T extends { user_id?: string; profiles?: ProfileRelation }>(items: T[], profileMap: Record<string, ProfileInfo>) =>
+    items.map((item) => {
+      const uid = item.user_id ? String(item.user_id) : null;
+      const joinedProfile = normalizeProfile(item.profiles);
+      const profile = uid ? (joinedProfile ?? profileMap[uid]) : undefined;
+
+      if (!profile) return item;
+
+      return {
+        ...item,
+        profiles: {
+          id: uid ?? undefined,
+          username: profile.username,
+          avatar_url: profile.avatar_url,
+        },
+      };
+    });
 
   const fetchCounts_Likes_Avatars = async (posts: PostItem[]) => {
     const postIds = posts.map((p) => p.id);
@@ -103,9 +187,12 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
 
     const avatarsIndexMap: Record<string, number> = {};
     posts.forEach((a: any) => {
-      const uid = String(a.user_id);
-      if(!(uid in avatarsIndexMap))
-        avatarsIndexMap[uid] = getAvatarIndexFromUrl(a.profiles?.avatar_url ?? null) ?? 0;
+      const uid = String(a.user_id ?? '');
+      if (!(uid in avatarsIndexMap)) {
+        const avatarUrl = normalizeProfile(a.profiles)?.avatar_url ?? null;
+        const avatarIndex = getAvatarIndexFromUrl(avatarUrl);
+        avatarsIndexMap[uid] = avatarIndex ?? getDeterministicAvatarIndex(a.user_id);
+      }
     });
     setPostAvatar((prev) => ({ ...prev, ...avatarsIndexMap }));
   };
@@ -154,14 +241,16 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
 
     const { data, error } = await supabase
       .from('post_comments')
-      .select('*')
+      .select('id, content, created_at, user_id, post_id, profiles(username, avatar_url)')
       .eq('post_id', post.id)
       .order('created_at', { ascending: true });
 
     setCommentsLoading((prev) => ({ ...prev, [postId]: false }));
 
     if (!error && data) {
-      setCommentsByPost((prev) => ({ ...prev, [postId]: data as PostComment[] }));
+      const profileMap = await fetchProfilesForUserIds(data.map((comment: any) => comment.user_id));
+      const normalizedComments = enrichItemsWithProfiles(data as PostComment[], profileMap) as PostComment[];
+      setCommentsByPost((prev) => ({ ...prev, [postId]: normalizedComments }));
       return;
     }
   };
@@ -177,10 +266,16 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
 
     setCommentsSubmitting((prev) => ({ ...prev, [postId]: true }));
 
+    const { data: profileData } = await supabase
+      .from('profiles')
+      .select('username, avatar_url')
+      .eq('id', userId)
+      .single();
+
     const { data, error } = await supabase
       .from('post_comments')
       .insert({ post_id: post.id, content: text, user_id: userId })
-      .select('*');
+      .select('*, profiles(username, avatar_url)');
 
     setCommentsSubmitting((prev) => ({ ...prev, [postId]: false }));
 
@@ -190,10 +285,52 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
     }
 
     const newComment = Array.isArray(data) ? data[0] : data;
+    const normalizedComment = {
+      ...(newComment ?? {}),
+      profiles: normalizeProfile((newComment as any)?.profiles) ?? (profileData ? {
+        id: userId,
+        username: profileData.username ?? undefined,
+        avatar_url: profileData.avatar_url ?? undefined,
+      } : undefined),
+    };
 
-    setCommentsByPost((prev) => ({ ...prev, [postId]: [...(prev[postId] ?? []), newComment] }));
+    setCommentsByPost((prev) => ({ ...prev, [postId]: [...(prev[postId] ?? []), normalizedComment] }));
     setCommentCounts((prev) => ({ ...prev, [postId]: (prev[postId] ?? 0) + 1 }));
     setCommentInputByPost((prev) => ({ ...prev, [postId]: '' }));
+  };
+
+  const handleDeleteComment = async (comment: PostComment, post: PostItem) => {
+    const commentId = String(comment.id);
+    const isOwner = currentUserId && comment.user_id === currentUserId;
+    if (!isOwner) return;
+
+    Alert.alert('Delete comment', 'Are you sure you want to delete this comment?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          setDeletingCommentId(commentId);
+
+          try {
+            const { error: deleteError } = await supabase.from('post_comments').delete().eq('id', comment.id);
+            if (deleteError) throw deleteError;
+
+            const postId = String(post.id);
+            setCommentsByPost((prev) => ({
+              ...prev,
+              [postId]: (prev[postId] ?? []).filter((item) => String(item.id) !== commentId),
+            }));
+            setCommentCounts((prev) => ({ ...prev, [postId]: Math.max((prev[postId] ?? 1) - 1, 0) }));
+          } catch (error: any) {
+            console.warn('delete comment error', error);
+            Alert.alert('Delete failed', error?.message ?? 'Unable to delete this comment right now.');
+          } finally {
+            setDeletingCommentId(null);
+          }
+        },
+      },
+    ]);
   };
 
   const handleDeletePost = async (post: PostItem) => {
@@ -273,8 +410,7 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
 
       let query = supabase
         .from('posts')
-        .select('*, profiles(username, avatar_url)')
-        .order('created_at', { ascending: false })
+        .select('id, content, created_at, location, user_id, mood, image_url, profiles(username, avatar_url)')
         .limit(200);
 
       if (filterUserId) {
@@ -295,8 +431,8 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
       if (!data) return setPosts([]);
 
       const filtered = filterUserId
-        ? data
-        : data.filter((post: PostItem) => {
+        ? (data as PostItem[])
+        : (data as PostItem[]).filter((post: PostItem) => {
             if (!post.location || !currentLocation) return false;
             const parts = String(post.location).split(',');
             if (parts.length < 2) return false;
@@ -309,12 +445,16 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
             return distance <= radiusKm;
           });
 
-      setPosts(filtered);
-      await fetchCounts_Likes_Avatars(filtered);
+      const profileUserIds = filtered.map((post: PostItem) => post.user_id);
+      const profileMap = await fetchProfilesForUserIds(profileUserIds);
+      const enrichedPosts = enrichItemsWithProfiles(filtered, profileMap) as PostItem[];
+
+      setPosts(enrichedPosts);
+      await fetchCounts_Likes_Avatars(enrichedPosts);
     };
 
     load();
-  }, [visible, radiusKm, currentLocation]);
+  }, [visible, radiusKm, currentLocation, filterUserId]);
 
   return (
     <Modal visible={visible} animationType="slide" transparent>
@@ -342,9 +482,9 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
                 const likeCount = likeCounts[postId] ?? 0;
                 const commentCount = commentCounts[postId] ?? 0;
 
-                const username = item.profiles?.username ?? item.user_id ?? 'Anon';
-              
-                const index = postAvatar[String(item.user_id)] 
+                const normalizedPostProfile = normalizeProfile(item.profiles);
+                const username = normalizedPostProfile?.username ?? 'Anon';
+                const index = postAvatar[String(item.user_id)] ?? getDeterministicAvatarIndex(item.user_id);
 
                 return (
   
@@ -352,8 +492,8 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
                     <View style={styles.postRow}>
       
                       <View style={styles.avatarWrapper}>
-                        {index !== -1 ? (
-                          <Image source={avatarOptions[index]} style={styles.avatar}/>
+                        {index >= 0 ? (
+                          <Image source={avatarOptions[index] ?? avatarOptions[0]} style={styles.avatar}/>
                         ) : (
                           <View style={styles.avatarPlaceholder}>
                             <Text style={styles.avatarInitial}>{String(username).charAt(0).toUpperCase()}</Text>
@@ -409,14 +549,47 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
                         {commentsLoading[postId] ? (
                           <ActivityIndicator color="#60a5fa" />
                         ) : comments.length > 0 ? (
-                          comments.map((comment) => (
-                            <View key={String(comment.id)} style={styles.commentItemIndented}>
-                              <Text style={styles.commentText}>{comment.content ?? 'Comment'}</Text>
-                              {comment.created_at ? (
-                                <Text style={styles.commentMeta}>{new Date(comment.created_at).toLocaleString()}</Text>
-                              ) : null}
-                            </View>
-                          ))
+                          comments.map((comment) => {
+                            const normalizedCommentProfile = normalizeProfile(comment.profiles);
+                            const commentUsername = normalizedCommentProfile?.username ?? 'Anon';
+                            const commentIndex = getAvatarIndexFromUrl(normalizedCommentProfile?.avatar_url ?? null) ?? getDeterministicAvatarIndex(comment.user_id);
+                            const isCommentOwner = currentUserId && comment.user_id === currentUserId;
+
+                            return (
+                              <View key={String(comment.id)} style={styles.commentItemIndented}>
+                                <View style={styles.commentRow}>
+                                  <View style={styles.commentAvatarWrapper}>
+                                    {commentIndex >= 0 ? (
+                                      <Image source={avatarOptions[commentIndex] ?? avatarOptions[0]} style={styles.commentAvatar} />
+                                    ) : (
+                                      <View style={styles.commentAvatarPlaceholder}>
+                                        <Text style={styles.commentAvatarInitial}>{String(commentUsername).charAt(0).toUpperCase()}</Text>
+                                      </View>
+                                    )}
+                                  </View>
+                                  <View style={styles.commentBody}>
+                                    <View style={styles.commentHeaderRow}>
+                                      <Text style={styles.commentUsername}>{commentUsername}</Text>
+                                      {isCommentOwner ? (
+                                        <Pressable
+                                          onPress={() => handleDeleteComment(comment, item)}
+                                          disabled={deletingCommentId === String(comment.id)}
+                                        >
+                                          <Text style={styles.commentDeleteText}>
+                                            {deletingCommentId === String(comment.id) ? 'Deleting...' : 'Delete'}
+                                          </Text>
+                                        </Pressable>
+                                      ) : null}
+                                    </View>
+                                    <Text style={styles.commentText}>{comment.content ?? 'Comment'}</Text>
+                                    {comment.created_at ? (
+                                      <Text style={styles.commentMeta}>{new Date(comment.created_at).toLocaleString()}</Text>
+                                    ) : null}
+                                  </View>
+                                </View>
+                              </View>
+                            );
+                          })
                         ) : (
                           <Text style={styles.emptyComments}>No comments yet.</Text>
                         )}
@@ -539,6 +712,54 @@ const styles = StyleSheet.create({
     borderLeftWidth: 2,
     borderLeftColor: '#111827',
     paddingLeft: 10,
+  },
+  commentRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  commentAvatarWrapper: {
+    width: 28,
+    height: 28,
+  },
+  commentAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#374151',
+  },
+  commentAvatarPlaceholder: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#374151',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  commentAvatarInitial: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  commentBody: {
+    flex: 1,
+  },
+  commentHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 2,
+    gap: 8,
+  },
+  commentUsername: {
+    color: '#111827',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  commentDeleteText: {
+    color: '#f7a7a8',
+    fontWeight: '600',
+    fontSize: 11,
   },
   commentInputRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8, marginLeft: 54 },
   commentInput: { flex: 1, backgroundColor: '#fff2f1', color: '#5e688b', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, marginRight: 8 },

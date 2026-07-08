@@ -2,12 +2,12 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { supabase } from '../../utils/supabase';
 import { avatarOptions, getAvatarIndexFromUrl, getAvatarUrlForIndex } from '../../utils/helpers';
-import FreedomWallModal from './FreedomWallModal';
 
 type Props = {
   userId: string;
   email: string;
   onLogout: () => void;
+  onOpenMemoryMap: () => void;
 };
 
 type ProfilePost = {
@@ -17,7 +17,7 @@ type ProfilePost = {
   location?: string | null;
 };
 
-export default function Profile({ userId, email, onLogout }: Props) {
+export default function Profile({ userId, email, onLogout, onOpenMemoryMap }: Props) {
   const [username, setUsername] = useState('');
   const [bio, setBio] = useState('');
   const [loading, setLoading] = useState(false);
@@ -27,7 +27,6 @@ export default function Profile({ userId, email, onLogout }: Props) {
   const [tambayCount, setTambayCount] = useState(0);
   const [latestPosts, setLatestPosts] = useState<ProfilePost[]>([]);
   const [latestPostsLoading, setLatestPostsLoading] = useState(false);
-  const [showMemories, setShowMemories] = useState(false);
 
   const totalPages = useMemo(() => Math.ceil(avatarOptions.length / 6), []);
 
@@ -219,7 +218,7 @@ export default function Profile({ userId, email, onLogout }: Props) {
             <Text style={styles.emptyText}>No posts yet.</Text>
           )}
 
-          <Pressable style={styles.memoriesButton} onPress={() => setShowMemories(true)}>
+          <Pressable style={styles.memoriesButton} onPress={onOpenMemoryMap}>
             <Text style={styles.memoriesButtonText}>View memories</Text>
           </Pressable>
         </View>
@@ -232,14 +231,6 @@ export default function Profile({ userId, email, onLogout }: Props) {
         </Pressable>
       </View>
 
-      <FreedomWallModal
-        visible={showMemories}
-        onClose={() => setShowMemories(false)}
-        currentLocation={null}
-        filterUserId={userId}
-        readOnly
-        showMapView
-      />
     </ScrollView>
   );
 }
