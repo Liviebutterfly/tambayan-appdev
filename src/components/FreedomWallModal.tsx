@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Modal, View, Text, FlatList, StyleSheet, Pressable, ActivityIndicator, TextInput, Image } from 'react-native';
+import { Modal, View, Text, FlatList, StyleSheet, Pressable, ActivityIndicator, TextInput, Image, Alert } from 'react-native';
 import { supabase } from '../../utils/supabase';
 import { oneWeekAgo, avatarOptions, getAvatarIndexFromUrl, haversineDistance} from '../../utils/helpers';
 
@@ -8,6 +8,8 @@ type Props = {
   onClose: () => void;
   currentLocation: { lat: number; lng: number } | null;
   radiusKm?: number;
+  filterUserId?: string | null;
+  readOnly?: boolean;
 };
 
 type PostComment = {
@@ -23,11 +25,13 @@ type PostItem = {
   created_at?: string;
   location?: string | null;
   user_id?: string;
+  mood?: string | null;
+  image_url?: string | null;
   profiles?: { username?: string; avatar_url?: string; id?: string };
 };
 
 
-export default function FreedomWallModal({ visible, onClose, currentLocation, radiusKm = 1 }: Props) {
+export default function FreedomWallModal({ visible, onClose, currentLocation, radiusKm = 1, filterUserId, readOnly = false }: Props) {
   const [loading, setLoading] = useState(false);
   const [posts, setPosts] = useState<PostItem[]>([]);
   const [expandedPostIds, setExpandedPostIds] = useState<Record<string, boolean>>({});
@@ -39,10 +43,23 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
   const [commentCounts, setCommentCounts] = useState<Record<string, number>>({});
   const [commentInputByPost, setCommentInputByPost] = useState<Record<string, string>>({});
   const [commentsSubmitting, setCommentsSubmitting] = useState<Record<string, boolean>>({});
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [deletingPostId, setDeletingPostId] = useState<string | null>(null);
 
   //for setting avatar index for each post
   const [postAvatar, setPostAvatar] = useState<Record<string, number>>({});
 
+  const moodIconMap: Record<string, string> = {
+    happy: 'https://placehold.co/24x24/ffd166/1f2937?text=😊',
+    calm: 'https://placehold.co/24x24/8ecae6/1f2937?text=🌿',
+    sad: 'https://placehold.co/24x24/9db4f5/1f2937?text=☁️',
+    angry: 'https://placehold.co/24x24/fa8072/1f2937?text=🔥',
+  };
+
+  const formatMoodLabel = (mood?: string | null) => {
+    if (!mood) return '';
+    return mood.charAt(0).toUpperCase() + mood.slice(1);
+  };
 
   const fetchCounts_Likes_Avatars = async (posts: PostItem[]) => {
     const postIds = posts.map((p) => p.id);
@@ -179,24 +196,94 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
     setCommentInputByPost((prev) => ({ ...prev, [postId]: '' }));
   };
 
+  const handleDeletePost = async (post: PostItem) => {
+    const postId = String(post.id);
+    const isOwner = currentUserId && post.user_id === currentUserId;
+    if (!isOwner) return;
+
+    Alert.alert('Delete post', 'Are you sure you want to delete this post?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          setDeletingPostId(postId);
+
+          try {
+            const { error: deleteError } = await supabase.from('posts').delete().eq('id', post.id);
+            if (deleteError) {
+              throw deleteError;
+            }
+
+            if (post.image_url) {
+              try {
+                const urlParts = post.image_url.split('/');
+                const imagesIndex = urlParts.indexOf('images');
+                const storagePath = urlParts.slice(imagesIndex + 1).join('/');
+                if (storagePath) {
+                  await supabase.storage.from('images').remove([storagePath]);
+                }
+              } catch (storageError) {
+                console.warn('delete image storage error', storageError);
+              }
+            }
+
+            setPosts((prev) => prev.filter((item) => String(item.id) !== postId));
+            setExpandedPostIds((prev) => {
+              const next = { ...prev };
+              delete next[postId];
+              return next;
+            });
+            setCommentsByPost((prev) => {
+              const next = { ...prev };
+              delete next[postId];
+              return next;
+            });
+          } catch (error: any) {
+            console.warn('delete post error', error);
+            Alert.alert('Delete failed', error?.message ?? 'Unable to delete this post right now.');
+          } finally {
+            setDeletingPostId(null);
+          }
+        },
+      },
+    ]);
+  };
+
+  useEffect(() => {
+    const loadSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      setCurrentUserId(session?.user.id ?? null);
+    };
+
+    loadSession();
+  }, []);
+
   useEffect(() => {
     if (!visible) return;
 
     const load = async () => {
       setLoading(true);
 
-      if (!currentLocation) {
+      if (!currentLocation && !filterUserId) {
         setPosts([]);
         setLoading(false);
         return;
       }
 
-      const { data, error } = await supabase
+      let query = supabase
         .from('posts')
         .select('*, profiles(username, avatar_url)')
-        .gte('created_at', oneWeekAgo())
         .order('created_at', { ascending: false })
         .limit(200);
+
+      if (filterUserId) {
+        query = query.eq('user_id', filterUserId);
+      } else {
+        query = query.gte('created_at', oneWeekAgo());
+      }
+
+      const { data, error } = await query;
 
       setLoading(false);
 
@@ -206,19 +293,21 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
       }
 
       if (!data) return setPosts([]);
-    
-      const filtered = data.filter((post: PostItem) => {
-        if (!post.location) return false;
-        const parts = String(post.location).split(',');
-        if (parts.length < 2) return false;
 
-        const lat = parseFloat(parts[0]);
-        const lng = parseFloat(parts[1]);
-        if (Number.isNaN(lat) || Number.isNaN(lng)) return false;
+      const filtered = filterUserId
+        ? data
+        : data.filter((post: PostItem) => {
+            if (!post.location || !currentLocation) return false;
+            const parts = String(post.location).split(',');
+            if (parts.length < 2) return false;
 
-        const distance = haversineDistance(currentLocation.lat, currentLocation.lng, lat, lng);
-        return distance <= radiusKm;
-      });
+            const lat = parseFloat(parts[0]);
+            const lng = parseFloat(parts[1]);
+            if (Number.isNaN(lat) || Number.isNaN(lng)) return false;
+
+            const distance = haversineDistance(currentLocation.lat, currentLocation.lng, lat, lng);
+            return distance <= radiusKm;
+          });
 
       setPosts(filtered);
       await fetchCounts_Likes_Avatars(filtered);
@@ -274,21 +363,43 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
                       </View>
 
                       <View style={styles.postBody}>
-                        <Text style={styles.username}>{username}</Text>
+                        <View style={styles.usernameRow}>
+                          <Text style={styles.username}>{username}</Text>
+                          {item.mood ? (
+                            <View style={styles.moodBadge}>
+                              <Image source={{ uri: moodIconMap[item.mood] ?? moodIconMap.happy }} style={styles.moodIcon} />
+                              <Text style={styles.moodLabel}>{formatMoodLabel(item.mood)}</Text>
+                            </View>
+                          ) : null}
+                        </View>
                         <Text style={styles.postContent}>{item.content}</Text>
+                        {item.image_url ? (
+                          <Image source={{ uri: item.image_url }} style={styles.postImage} resizeMode="cover" />
+                        ) : null}
                         <Text style={styles.postMeta}>{item.created_at ? new Date(item.created_at).toLocaleString() : ''}</Text>
 
                         <View style={styles.postActions}>
-                          <Pressable onPress={() => toggleLike(item)} style={styles.actionButton}>
-                            {isLiked ? (
-                              <Text style={styles.statsText}>❤️ {likeCount} likes</Text>
-                            ) : (
-                              <Text style={styles.statsText}>🤍 {likeCount} likes</Text>
-                            )}
-                          </Pressable>
-                          <Pressable onPress={() => toggleComments(item)} style={styles.actionButton}>
-                            <Text style={styles.actionText}>💬 {commentCount} comments</Text>
-                          </Pressable>
+                          {!readOnly ? (
+                            <>
+                              <Pressable onPress={() => toggleLike(item)} style={styles.actionButton}>
+                                {isLiked ? (
+                                  <Text style={styles.statsText}>❤️ {likeCount} likes</Text>
+                                ) : (
+                                  <Text style={styles.statsText}>🤍 {likeCount} likes</Text>
+                                )}
+                              </Pressable>
+                              <Pressable onPress={() => toggleComments(item)} style={styles.actionButton}>
+                                <Text style={styles.actionText}>💬 {commentCount} comments</Text>
+                              </Pressable>
+                              {currentUserId && item.user_id === currentUserId ? (
+                                <Pressable onPress={() => handleDeletePost(item)} style={styles.actionButton} disabled={deletingPostId === postId}>
+                                  <Text style={styles.deleteText}>{deletingPostId === postId ? 'Deleting...' : 'Delete'}</Text>
+                                </Pressable>
+                              ) : null}
+                            </>
+                          ) : (
+                            <Text style={styles.readOnlyHint}>Viewing only</Text>
+                          )}
                         </View>
                       </View>
                     </View>
@@ -327,7 +438,7 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
                   </View>
                 );
               }}
-              ListEmptyComponent={<Text style={{ color: '#9ca3af', marginTop: 12 }}>No posts nearby in the last week.</Text>}
+              ListEmptyComponent={<Text style={{ color: '#9ca3af', marginTop: 12 }}>{filterUserId ? 'No posts from this user yet.' : 'No posts nearby in the last week.'}</Text>}
             />
           )}
         </View>
@@ -339,17 +450,17 @@ export default function FreedomWallModal({ visible, onClose, currentLocation, ra
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    padding: 20,
-    justifyContent: 'center',
+    backgroundColor: 'rgba(94, 104, 139, 0.78)',
+    padding: 0,
+    justifyContent: 'flex-start',
   },
   card: {
-    backgroundColor: '#0b1220',
-    borderRadius: 12,
-    maxHeight: '92%',
-    padding: 12,
-    marginTop: 40,
-    marginBottom: 56,
+    flex: 1,
+    backgroundColor: '#5e688b',
+    borderRadius: 0,
+    maxHeight: '100%',
+    padding: 16,
+    margin: 0,
   },
   header: {
     flexDirection: 'row',
@@ -358,17 +469,17 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   title: {
-    color: '#fff',
+    color: '#fff2f1',
     fontSize: 18,
     fontWeight: '700',
   },
   closeButton: {},
-  closeText: { color: '#60a5fa', fontWeight: '600' },
+  closeText: { color: '#fff2f1', fontWeight: '600' },
   post: {
     padding: 12,
-    borderRadius: 8,
-    backgroundColor: '#0f1724',
-    marginBottom: 8,
+    borderRadius: 12,
+    backgroundColor: '#fff2f1',
+    marginBottom: 10,
   },
   postRow: { flexDirection: 'row', alignItems: 'flex-start' },
   avatarWrapper: { width: 44, marginRight: 10 },
@@ -376,9 +487,14 @@ const styles = StyleSheet.create({
   avatarPlaceholder: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#374151', justifyContent: 'center', alignItems: 'center' },
   avatarInitial: { color: '#fff', fontWeight: '700' },
   postBody: { flex: 1 },
-  username: { color: '#fff', fontWeight: '700', marginBottom: 4 },
-  postContent: { color: '#f8fafc' },
-  postMeta: { color: '#94a3b8', marginTop: 6, fontSize: 12 },
+  usernameRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4, gap: 8, flexWrap: 'wrap' },
+  username: { color: '#5e688b', fontWeight: '700' },
+  moodBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#ffdbb7', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3, gap: 4 },
+  moodIcon: { width: 16, height: 16, borderRadius: 8 },
+  moodLabel: { color: '#5e688b', fontSize: 11, fontWeight: '600' },
+  postContent: { color: '#5e688b' },
+  postImage: { width: '100%', height: 160, borderRadius: 8, marginTop: 8, backgroundColor: '#ffdbb7' },
+  postMeta: { color: '#7a84a0', marginTop: 6, fontSize: 12 },
   postActions: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -386,7 +502,7 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   statsText: {
-    color: '#f8fafc',
+    color: '#5e688b',
     fontSize: 13,
   },
   actionButton: {
@@ -394,7 +510,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
   },
   actionText: {
-    color: '#60a5fa',
+    color: '#f7a7a8',
+    fontWeight: '600',
+    fontSize: 13,
+  },
+  readOnlyHint: {
+    color: '#7a84a0',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  deleteText: {
+    color: '#f7a7a8',
     fontWeight: '600',
     fontSize: 13,
   },
@@ -402,7 +528,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
     paddingTop: 8,
     borderTopWidth: 1,
-    borderTopColor: '#1f2937',
+    borderTopColor: '#ffdbb7',
   },
   commentItem: {
     paddingVertical: 6,
@@ -415,10 +541,10 @@ const styles = StyleSheet.create({
     paddingLeft: 10,
   },
   commentInputRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8, marginLeft: 54 },
-  commentInput: { flex: 1, backgroundColor: '#071025', color: '#fff', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, marginRight: 8 },
-  sendButton: { backgroundColor: '#2563eb', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8 },
+  commentInput: { flex: 1, backgroundColor: '#fff2f1', color: '#5e688b', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, marginRight: 8 },
+  sendButton: { backgroundColor: '#f7a7a8', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8 },
   commentText: {
-    color: '#e5e7eb',
+    color: '#111827',
   },
   commentMeta: {
     color: '#94a3b8',

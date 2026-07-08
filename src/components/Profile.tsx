@@ -1,12 +1,20 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { supabase } from '../../utils/supabase';
 import { avatarOptions, getAvatarIndexFromUrl, getAvatarUrlForIndex } from '../../utils/helpers';
+import FreedomWallModal from './FreedomWallModal';
 
 type Props = {
   userId: string;
   email: string;
   onLogout: () => void;
+};
+
+type ProfilePost = {
+  id: string | number;
+  content: string;
+  created_at?: string;
+  location?: string | null;
 };
 
 export default function Profile({ userId, email, onLogout }: Props) {
@@ -16,6 +24,10 @@ export default function Profile({ userId, email, onLogout }: Props) {
   const [mode, setMode] = useState<'view' | 'edit'>('view');
   const [selectedAvatar, setSelectedAvatar] = useState<number | null>(null);
   const [avatarPage, setAvatarPage] = useState(0);
+  const [tambayCount, setTambayCount] = useState(0);
+  const [latestPosts, setLatestPosts] = useState<ProfilePost[]>([]);
+  const [latestPostsLoading, setLatestPostsLoading] = useState(false);
+  const [showMemories, setShowMemories] = useState(false);
 
   const totalPages = useMemo(() => Math.ceil(avatarOptions.length / 6), []);
 
@@ -41,7 +53,30 @@ export default function Profile({ userId, email, onLogout }: Props) {
       }
     };
 
+    const loadUserPosts = async () => {
+      setLatestPostsLoading(true);
+      const { data, error } = await supabase
+        .from('posts')
+        .select('id, content, created_at, location')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+
+      setLatestPostsLoading(false);
+
+      if (error) {
+        console.warn('posts load error', error);
+        setLatestPosts([]);
+        setTambayCount(0);
+        return;
+      }
+
+      const posts = (data ?? []) as ProfilePost[];
+      setLatestPosts(posts.slice(0, 3));
+      setTambayCount(posts.length);
+    };
+
     loadProfile();
+    loadUserPosts();
   }, [userId]);
 
   const saveProfile = async () => {
@@ -69,7 +104,7 @@ export default function Profile({ userId, email, onLogout }: Props) {
 
   if (mode === 'edit') {
     return (
-      <View style={styles.profileScreen}>
+      <ScrollView style={styles.profileScreen} contentContainerStyle={styles.profileContent} keyboardShouldPersistTaps="handled">
         <View style={styles.editHeader}>
           <Pressable style={styles.backButton} onPress={() => setMode('view')}>
             <Text style={styles.backButtonText}>Back</Text>
@@ -139,12 +174,12 @@ export default function Profile({ userId, email, onLogout }: Props) {
             <Text style={styles.saveButtonText}>{loading ? 'Saving...' : 'Save Profile'}</Text>
           </Pressable>
         </View>
-      </View>
+      </ScrollView>
     );
   }
 
   return (
-    <View style={styles.profileScreen}>
+    <ScrollView style={styles.profileScreen} contentContainerStyle={styles.profileContent} keyboardShouldPersistTaps="handled">
       <View style={styles.profileHeader}>
         <View style={styles.avatarPlaceholder}>
           {selectedAvatar !== null ? (
@@ -155,11 +190,39 @@ export default function Profile({ userId, email, onLogout }: Props) {
         </View>
         <Text style={styles.profileName}>{username || 'Your Name'}</Text>
         <Text style={styles.profileEmail}>{email}</Text>
+        <View style={styles.tambayBadge}>
+          <Text style={styles.tambayValue}>{tambayCount}</Text>
+          <Text style={styles.tambayLabel}>tambays</Text>
+        </View>
       </View>
 
       <View style={styles.profileBody}>
         <Text style={styles.sectionLabel}>About</Text>
         <Text style={styles.profileAbout}>{bio || 'Tap edit to add a short bio.'}</Text>
+
+        <View style={styles.latestPostsCard}>
+          <Text style={styles.sectionLabel}>Latest posts</Text>
+          {latestPostsLoading ? (
+            <ActivityIndicator color="#60a5fa" style={{ marginTop: 8 }} />
+          ) : latestPosts.length > 0 ? (
+            latestPosts.map((post) => (
+              <View key={post.id} style={styles.latestPostItem}>
+                <Text style={styles.latestPostContent} numberOfLines={2}>
+                  {post.content || 'No caption'}
+                </Text>
+                <Text style={styles.latestPostMeta}>
+                  {post.created_at ? new Date(post.created_at).toLocaleDateString() : ''}
+                </Text>
+              </View>
+            ))
+          ) : (
+            <Text style={styles.emptyText}>No posts yet.</Text>
+          )}
+
+          <Pressable style={styles.memoriesButton} onPress={() => setShowMemories(true)}>
+            <Text style={styles.memoriesButtonText}>View memories</Text>
+          </Pressable>
+        </View>
 
         <Pressable style={styles.editButton} onPress={() => setMode('edit')}>
           <Text style={styles.editButtonText}>Edit profile</Text>
@@ -168,15 +231,28 @@ export default function Profile({ userId, email, onLogout }: Props) {
           <Text style={styles.logoutButtonText}>Log out</Text>
         </Pressable>
       </View>
-    </View>
+
+      <FreedomWallModal
+        visible={showMemories}
+        onClose={() => setShowMemories(false)}
+        currentLocation={null}
+        filterUserId={userId}
+        readOnly
+        showMapView
+      />
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   profileScreen: {
     flex: 1,
+    backgroundColor: '#5e688b',
+  },
+  profileContent: {
+    flexGrow: 1,
     padding: 20,
-    backgroundColor: '#0f172a',
+    paddingBottom: 120,
   },
   profileHeader: {
     alignItems: 'center',
@@ -186,7 +262,7 @@ const styles = StyleSheet.create({
     width: 96,
     height: 96,
     borderRadius: 48,
-    backgroundColor: '#1e293b',
+    backgroundColor: '#fff2f1',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 16,
@@ -198,37 +274,94 @@ const styles = StyleSheet.create({
     borderRadius: 48,
   },
   avatarText: {
-    color: '#f8fafc',
+    color: '#5e688b',
     fontSize: 32,
     fontWeight: '700',
   },
   profileName: {
-    color: '#f8fafc',
+    color: '#fff2f1',
     fontSize: 22,
     fontWeight: '700',
   },
   profileEmail: {
-    color: '#94a3b8',
+    color: '#ffdbb7',
     marginTop: 6,
+  },
+  tambayBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: '#fff2f1',
+  },
+  tambayValue: {
+    color: '#5e688b',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  tambayLabel: {
+    color: '#7a84a0',
+    fontSize: 13,
+    fontWeight: '600',
   },
   profileBody: {
     flex: 1,
   },
   profileAbout: {
-    color: '#cbd5e1',
+    color: '#fff2f1',
     fontSize: 15,
     lineHeight: 22,
   },
+  latestPostsCard: {
+    marginTop: 14,
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: '#fff2f1',
+  },
+  latestPostItem: {
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+  },
+  latestPostContent: {
+    color: '#5e688b',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  latestPostMeta: {
+    color: '#7a84a0',
+    fontSize: 12,
+    marginTop: 4,
+  },
+  emptyText: {
+    color: '#7a84a0',
+    fontSize: 13,
+    marginTop: 6,
+  },
+  memoriesButton: {
+    marginTop: 10,
+    paddingVertical: 10,
+    borderRadius: 999,
+    alignItems: 'center',
+    backgroundColor: '#f7a7a8',
+  },
+  memoriesButtonText: {
+    color: '#5e688b',
+    fontWeight: '600',
+  },
   sectionLabel: {
-    color: '#94a3b8',
+    color: '#7a84a0',
     marginTop: 12,
     marginBottom: 8,
     fontSize: 14,
     fontWeight: '600',
   },
   profileInput: {
-    backgroundColor: '#111c2f',
-    color: '#f8fafc',
+    backgroundColor: '#fff2f1',
+    color: '#5e688b',
     borderRadius: 14,
     padding: 14,
     fontSize: 16,
@@ -239,35 +372,35 @@ const styles = StyleSheet.create({
   },
   editButton: {
     marginTop: 20,
-    backgroundColor: '#2563eb',
+    backgroundColor: '#f7a7a8',
     borderRadius: 14,
     paddingVertical: 14,
     alignItems: 'center',
   },
   editButtonText: {
-    color: '#ffffff',
+    color: '#5e688b',
     fontWeight: '600',
   },
   saveButton: {
     marginTop: 20,
-    backgroundColor: '#2563eb',
+    backgroundColor: '#f7a7a8',
     borderRadius: 14,
     paddingVertical: 14,
     alignItems: 'center',
   },
   saveButtonText: {
-    color: '#ffffff',
+    color: '#5e688b',
     fontWeight: '600',
   },
   logoutButton: {
     marginTop: 12,
-    backgroundColor: '#dc2626',
+    backgroundColor: '#ffdbb7',
     borderRadius: 14,
     paddingVertical: 14,
     alignItems: 'center',
   },
   logoutButtonText: {
-    color: '#ffffff',
+    color: '#5e688b',
     fontWeight: '600',
   },
   editHeader: {
@@ -280,14 +413,14 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 10,
     borderRadius: 999,
-    backgroundColor: '#1e293b',
+    backgroundColor: '#fff2f1',
   },
   backButtonText: {
-    color: '#f8fafc',
+    color: '#5e688b',
     fontWeight: '600',
   },
   profileTitle: {
-    color: '#f8fafc',
+    color: '#fff2f1',
     fontSize: 18,
     fontWeight: '700',
   },
@@ -304,14 +437,14 @@ const styles = StyleSheet.create({
     width: '30%',
     aspectRatio: 1,
     borderRadius: 16,
-    backgroundColor: '#111c2f',
+    backgroundColor: '#fff2f1',
     padding: 6,
     alignItems: 'center',
     justifyContent: 'center',
   },
   avatarOptionActive: {
     borderWidth: 2,
-    borderColor: '#60a5fa',
+    borderColor: '#f7a7a8',
   },
   paginationRow: {
     flexDirection: 'row',
@@ -323,17 +456,17 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 12,
     borderRadius: 999,
-    backgroundColor: '#1e293b',
+    backgroundColor: '#fff2f1',
   },
   paginationButtonDisabled: {
     opacity: 0.45,
   },
   paginationButtonText: {
-    color: '#f8fafc',
+    color: '#5e688b',
     fontWeight: '600',
   },
   paginationText: {
-    color: '#94a3b8',
+    color: '#ffdbb7',
     fontWeight: '600',
   },
 });

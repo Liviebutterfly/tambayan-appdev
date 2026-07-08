@@ -113,9 +113,8 @@ export default function HomeScreen() {
                     attribution: '&copy; OpenStreetMap contributors',
                   }).addTo(map);
 
-                  const markerIconUrl = 'https://zsxdjjvohpivpwqitxrl.supabase.co/storage/v1/object/public/images/location-pin.png';
                   const markerIcon = L.icon({
-                    iconUrl: markerIconUrl,
+                    iconUrl: 'https://zsxdjjvohpivpwqitxrl.supabase.co/storage/v1/object/public/images/location-pin.png',
                     iconSize: [44, 44],
                     iconAnchor: [22, 22],
                     popupAnchor: [0, -44],
@@ -240,6 +239,11 @@ export default function HomeScreen() {
     router.replace('/login');
   };
 
+  const handlePostSuccess = () => {
+    setShowWall(true);
+    setTambayCount((prev) => prev + 1);
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.loadingContainer}>
@@ -274,7 +278,8 @@ export default function HomeScreen() {
   
           <View style={styles.cardContainer}>
             <View style={styles.locationInfo}>
-              <Text style={styles.cardText}>{locationName}</Text>
+              <Image source={{ uri: 'https://zsxdjjvohpivpwqitxrl.supabase.co/storage/v1/object/public/images/location-pin.png' }} style={styles.locationPin} />
+              <Text style={styles.cardText} numberOfLines={2}>{locationName}</Text>
             </View>
             <View style={styles.buttonRow}>
               <TouchableOpacity style={styles.wallButton} onPress={() => setShowWall(true)}>
@@ -282,7 +287,7 @@ export default function HomeScreen() {
                 <Text style={styles.cardText}>people have tambayed here this week!</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.postButton} onPress={() => setShowLeave(true)}>
-              <Text style={styles.cardText}>Leave a mark!</Text>
+                <Text style={styles.cardText}>Leave a mark!</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -305,7 +310,7 @@ export default function HomeScreen() {
       </View>
 
       <FreedomWallModal visible={showWall} onClose={() => setShowWall(false)} currentLocation={currentLocation} radiusKm={1} />
-      <LeavePostModal visible={showLeave} onClose={() => setShowLeave(false)} onPosted={() => setShowWall(true)} />
+      <LeavePostModal visible={showLeave} onClose={() => setShowLeave(false)} onPosted={handlePostSuccess} />
     </SafeAreaView>
   );
 }
@@ -313,22 +318,22 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: '#5e688b',
   },
   loadingContainer: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: '#5e688b',
     justifyContent: 'center',
     alignItems: 'center',
   },
   loadingText: {
-    color: '#ffffff',
+    color: '#fff2f1',
     fontSize: 16,
     fontWeight: '600',
   },
   mapScreen: {
     flex: 1,
-    backgroundColor: '#1e293b',
+    backgroundColor: '#5e688b',
   },
   profileScreen: {
     flex: 1,
@@ -436,10 +441,19 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   locationInfo: {
-    paddingBottom: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: '#fff2f1',
-    height: 30,
     borderRadius: 999,
+    minHeight: 36,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 6,
+  },
+  locationPin: {
+    width: 16,
+    height: 16,
   },
   buttonRow: {
     flexDirection: 'row',
@@ -451,7 +465,9 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 14,
     alignItems: 'center',
+    justifyContent: 'center',
     width: '50%',
+    minHeight: 78,
   },
   postButton: {
     backgroundColor: '#fff2f1',
@@ -459,7 +475,9 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 14,
     alignItems: 'center',
+    justifyContent: 'center',
     width: '50%',
+    minHeight: 78,
   },
   tambayCountText: {
     color: '#000',
@@ -482,8 +500,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     paddingBottom: 18,
-    backgroundColor: '#111827',
+    backgroundColor: '#fff2f1',
     gap: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#ffdbb7',
   },
   tabButton: {
     flex: 1,
@@ -491,17 +511,17 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 999,
     alignItems: 'center',
-    backgroundColor: '#1f2937',
+    backgroundColor: '#ffdbb7',
   },
   activeTabButton: {
-    backgroundColor: '#2563eb',
+    backgroundColor: '#f7a7a8',
   },
   tabLabel: {
-    color: '#e5e7eb',
+    color: '#5e688b',
     fontWeight: '600',
   },
   activeTabLabel: {
-    color: '#ffffff',
+    color: '#5e688b',
   },
   profileSheet: {
     position: 'absolute',
