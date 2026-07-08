@@ -80,9 +80,11 @@ export default function Profile({ userId, email, onLogout, onOpenMemoryMap }: Pr
 
   const saveProfile = async () => {
     setLoading(true);
+    const nextUsername = username.trim() || email.split('@')[0] || 'tambayan-user';
+
     const { error } = await supabase.from('profiles').upsert({
       id: userId,
-      username,
+      username: nextUsername,
       bio,
       email,
       avatar_url: getAvatarUrlForIndex(selectedAvatar),
@@ -94,6 +96,7 @@ export default function Profile({ userId, email, onLogout, onOpenMemoryMap }: Pr
       return;
     }
 
+    setUsername(nextUsername);
     setLoading(false);
     setMode('view');
     Alert.alert('Saved', 'Your profile was updated.');
@@ -187,7 +190,7 @@ export default function Profile({ userId, email, onLogout, onOpenMemoryMap }: Pr
             <Text style={styles.avatarText}>{email?.charAt(0).toUpperCase() || 'A'}</Text>
           )}
         </View>
-        <Text style={styles.profileName}>{username || 'Your Name'}</Text>
+        <Text style={styles.profileName}>{username || email?.split('@')[0] || 'Your Name'}</Text>
         <Text style={styles.profileEmail}>{email}</Text>
         <View style={styles.tambayBadge}>
           <Text style={styles.tambayValue}>{tambayCount}</Text>

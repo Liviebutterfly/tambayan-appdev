@@ -11,16 +11,16 @@ type Props = {
 };
 
 type MoodOption = {
-  value: 'happy' | 'calm' | 'sad' | 'angry';
+  value: 'nostalgic' | 'peaceful' | 'romantic' | 'motivational';
   label: string;
   image: string;
 };
 
 const moodOptions: MoodOption[] = [
-  { value: 'happy', label: 'Happy', image: '@/assets/mood_happy.png' },
-  { value: 'calm', label: 'Calm', image: '@/assets/mood_calm.png' },
-  { value: 'sad', label: 'Sad', image: '@/assets/mood_sad.png' },
-  { value: 'angry', label: 'Angry', image: '@/assets/mood_angry.png' },
+  { value: 'nostalgic', label: 'Nostalgic', image: require('../../assets/images/happy.png') },
+  { value: 'peaceful', label: 'Peaceful', image: require('../../assets/images/calm.png') },
+  { value: 'romantic', label: 'Romantic', image: require('../../assets/images/sad.png') },
+  { value: 'motivational', label: 'Motivational', image: require('../../assets/images/angry.png') },
 ];
 
 type MoodOptionButtonProps = {
@@ -48,8 +48,7 @@ function MoodOptionButton({ option, active, onPress }: MoodOptionButtonProps) {
         style={[styles.moodOption, active && styles.moodOptionActive]}
         onPress={onPress}
       >
-        <Image source={{ uri: option.image }} style={styles.moodIcon} />
-        <Text style={[styles.moodLabel, active && styles.moodLabelActive]}>{option.label}</Text>
+        <Image source={option.image as any} style={styles.moodIcon} />
       </Pressable>
     </Animated.View>
   );
@@ -59,7 +58,7 @@ export default function LeavePostModal({ visible, onClose, onPosted }: Props) {
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(false);
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
-  const [selectedMood, setSelectedMood] = useState<MoodOption['value']>('happy');
+  const [selectedMood, setSelectedMood] = useState<MoodOption['value']>('nostalgic');
   const [selectedImage, setSelectedImage] = useState<ImagePicker.ImagePickerAsset | null>(null);
 
   const getLocation = async () => {
@@ -205,7 +204,7 @@ export default function LeavePostModal({ visible, onClose, onPosted }: Props) {
     }
 
     setContent('');
-    setSelectedMood('happy');
+    setSelectedMood('nostalgic');
     setSelectedImage(null);
     Alert.alert('Posted', 'Your post was added to the Freedom Wall.');
     onClose();

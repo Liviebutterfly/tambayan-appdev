@@ -4,7 +4,7 @@ import { Alert, Image, Pressable, StyleSheet, Text, TouchableOpacity, View } fro
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import * as Location from 'expo-location';
-import { supabase } from '../../utils/supabase';
+import { ensureProfile, supabase } from '../../utils/supabase';
 import { avatarOptions, getAvatarIndexFromUrl, oneWeekAgo, getAvatarUrlForIndex, haversineDistance } from '../../utils/helpers';
 import FreedomWallModal from '../components/FreedomWallModal';
 import LeavePostModal from '../components/LeavePostModal';
@@ -150,6 +150,13 @@ export default function HomeScreen() {
         router.replace('/login');
         return;
       }
+
+      try {
+        await ensureProfile(session.user, session.user.user_metadata?.username ?? null);
+      } catch (profileError) {
+        console.warn('profile ensure error', profileError);
+      }
+
       setEmail(session.user.email ?? '');
       setUserId(session.user.id);
       setLoading(false);
@@ -162,6 +169,10 @@ export default function HomeScreen() {
       if (!session) {
         router.replace('/login');
       } else {
+        void ensureProfile(session.user, session.user.user_metadata?.username ?? null).catch((profileError) => {
+          console.warn('profile ensure error', profileError);
+        });
+
         setEmail(session.user.email ?? '');
         setUserId(session.user.id);
         setLoading(false);

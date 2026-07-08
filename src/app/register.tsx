@@ -2,7 +2,7 @@ import { Link, router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { supabase } from '../../utils/supabase';
+import { ensureProfile, supabase } from '../../utils/supabase';
 
 export default function RegisterScreen() {
   const [email, setEmail] = useState('');
@@ -31,7 +31,15 @@ const handleRegister = async () => {
 
   setLoading(true);
 
-  const { data, error } = await supabase.auth.signUp({ email, password });
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      data: {
+        username: username.trim(),
+      },
+    },
+  });
 
   if (error) {
     setLoading(false);
@@ -57,18 +65,15 @@ const handleRegister = async () => {
     return;
   }
 
-  const { error: profileError } = await supabase.from('profiles').upsert({
-    id: signInData.user.id,
-    email: signInData.user.email,
-    username: username.trim(),
-  });
-
-  setLoading(false);
-
-  if (profileError) {
-    Alert.alert('Profile save warning', profileError.message);
+  try {
+    await ensureProfile(signInData.user, username);
+  } catch (profileError: any) {
+    setLoading(false);
+    Alert.alert('Profile save warning', profileError?.message ?? 'Unable to create your profile.');
     return;
   }
+
+  setLoading(false);
 
   Alert.alert('Account created', 'Your profile is ready. Please sign in.');
   router.replace('/login');
