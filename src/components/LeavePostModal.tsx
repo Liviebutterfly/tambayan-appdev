@@ -16,6 +16,13 @@ type MoodOption = {
   image: string;
 };
 
+const moodBackgroundMap: Record<MoodOption['value'], string> = {
+  nostalgic: '#c1dae0',
+  peaceful: '#cef0db',
+  romantic: '#f7e4ea',
+  motivational: '#f2f0d8',
+};
+
 const moodOptions: MoodOption[] = [
   { value: 'nostalgic', label: 'Nostalgic', image: require('../../assets/images/happy.png') },
   { value: 'peaceful', label: 'Peaceful', image: require('../../assets/images/calm.png') },
@@ -60,6 +67,7 @@ export default function LeavePostModal({ visible, onClose, onPosted }: Props) {
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [selectedMood, setSelectedMood] = useState<MoodOption['value']>('nostalgic');
   const [selectedImage, setSelectedImage] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const [remainingMarks, setRemainingMarks] = useState(5);
 
   const getLocation = async () => {
     const { status } = await Location.requestForegroundPermissionsAsync();
@@ -88,7 +96,33 @@ export default function LeavePostModal({ visible, onClose, onPosted }: Props) {
       }
     };
 
+    const loadWeeklyMarkLimit = async () => {
+      const {
+        data: { session },
+        error: sessionErr,
+      } = await supabase.auth.getSession();
+
+      if (sessionErr || !session) {
+        setRemainingMarks(5);
+        return;
+      }
+
+      const now = new Date();
+      const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+      const { count, error } = await supabase
+        .from('posts')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', session.user.id)
+        .gte('created_at', oneWeekAgo);
+
+      if (!error) {
+        setRemainingMarks(Math.max(5 - (count ?? 0), 0));
+      }
+    };
+
     loadLocation();
+    loadWeeklyMarkLimit();
   }, [visible]);
 
   const getContentType = (asset: ImagePicker.ImagePickerAsset | null) => {
@@ -156,6 +190,30 @@ export default function LeavePostModal({ visible, onClose, onPosted }: Props) {
       return;
     }
 
+    const now = new Date();
+    const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    const { count, error: weeklyCountError } = await supabase
+      .from('posts')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', session.user.id)
+      .gte('created_at', oneWeekAgo);
+
+    if (weeklyCountError) {
+      setLoading(false);
+      Alert.alert('Unable to check post limit', weeklyCountError.message);
+      return;
+    }
+
+    const weeklyPostCount = count ?? 0;
+    if (weeklyPostCount >= 5) {
+      setLoading(false);
+      Alert.alert('Weekly limit reached', 'You can only leave 5 marks per week. Please try again next week.');
+      return;
+    }
+
+    setRemainingMarks((prev) => Math.max(prev - 1, 0));
+
     const payload: Record<string, any> = {
       user_id: session.user.id,
       content: content.trim(),
@@ -214,7 +272,12 @@ export default function LeavePostModal({ visible, onClose, onPosted }: Props) {
   return (
     <Modal visible={visible} animationType="slide" transparent>
       <View style={styles.overlay}>
-        <View style={styles.card}>
+        <View
+          style={[
+            styles.card,
+            { backgroundColor: moodBackgroundMap[selectedMood] ?? '#5e688b' },
+          ]}
+        >
           <Text style={styles.title}>Leave a mark</Text>
 
           <TextInput
@@ -263,8 +326,12 @@ export default function LeavePostModal({ visible, onClose, onPosted }: Props) {
           </View>
 
           <View style={styles.row}>
-            <Pressable style={styles.button} onPress={handleSubmit} disabled={loading}>
-              {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Post</Text>}
+            <Pressable style={styles.button} onPress={handleSubmit} disabled={loading || remainingMarks <= 0}>
+              {loading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.buttonText}>{remainingMarks > 0 ? `Post (${remainingMarks} left)` : 'Post (0 left)'}</Text>
+              )}
             </Pressable>
             <Pressable style={[styles.button, styles.cancel]} onPress={onClose}>
               <Text style={styles.buttonText}>Cancel</Text>
@@ -291,7 +358,7 @@ const styles = StyleSheet.create({
     borderColor: '#fff2f1',
   },
   title: {
-    color: '#fff2f1',
+    color: '#2f3a59',
     fontSize: 18,
     fontWeight: '700',
     marginBottom: 12,
@@ -311,9 +378,9 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   sectionLabel: {
-    color: '#fff2f1',
+    color: '#2f3a59',
     marginBottom: 8,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   moodRow: {
     flexDirection: 'row',

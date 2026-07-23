@@ -26,6 +26,7 @@ type Props = {
   radiusKm?: number;
   filterUserId?: string | null;
   readOnly?: boolean;
+  onPostDeleted?: (post: PostItem) => void;
 };
 
 type PostComment = {
@@ -54,6 +55,7 @@ export default function FreedomWallModal({
   radiusKm = 1,
   filterUserId,
   readOnly = false,
+  onPostDeleted,
 }: Props) {
   const [loading, setLoading] = useState(false);
   const [posts, setPosts] = useState<PostItem[]>([]);
@@ -68,6 +70,8 @@ export default function FreedomWallModal({
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [deletingPostId, setDeletingPostId] = useState<string | null>(null);
   const [postAvatar, setPostAvatar] = useState<Record<string, number>>({});
+  const [reportCounts, setReportCounts] = useState<Record<string, number>>({});
+  const [reportedPost, setReportedPost] = useState<Record<string, boolean>>({});
 
   const moodIconMap: Record<string, any> = {
     nostalgic: require('../../assets/images/happy.png'),
@@ -82,10 +86,10 @@ export default function FreedomWallModal({
   };
 
   const moodBackgroundMap: Record<string, string> = {
-    nostalgic: '#a5c8d1',
-    peaceful: '#a1d1b3',
-    romantic: '#dbc1ca',
-    motivational: '#ebe7c3',
+    nostalgic: '#c1dae0',
+    peaceful: '#cef0db',
+    romantic: '#f7e4ea',
+    motivational: '#f2f0d8',
   };
 
   const formatMoodLabel = (mood?: string | null) => {
@@ -105,6 +109,8 @@ export default function FreedomWallModal({
     setCommentsSubmitting({});
     setDeletingPostId(null);
     setPostAvatar({});
+    setReportCounts({});
+    setReportedPost({});
   };
 
   const fetchCountsLikesAndAvatars = async (visiblePosts: PostItem[]) => {
@@ -128,6 +134,8 @@ export default function FreedomWallModal({
 
     const likesMap: Record<string, number> = {};
     const likedMap: Record<string, boolean> = {};
+    const reportMap: Record<string, number> = {};
+    const reportedMap: Record<string, boolean> = {};
 
     if (likesData) {
       likesData.forEach((like: any) => {
@@ -146,6 +154,24 @@ export default function FreedomWallModal({
       .from('post_comments')
       .select('*')
       .in('post_id', postIds);
+
+    const { data: reportData } = await supabase
+      .from('post_reports')
+      .select('*')
+      .in('post_id', postIds);
+
+    if (reportData) {
+      reportData.forEach((report: any) => {
+        const pid = String(report.post_id);
+        reportMap[pid] = (reportMap[pid] ?? 0) + 1;
+        if (session?.user.id && report.user_id === session.user.id) {
+          reportedMap[pid] = true;
+        }
+      });
+    }
+
+    setReportCounts((prev) => ({ ...prev, ...reportMap }));
+    setReportedPost((prev) => ({ ...prev, ...reportedMap }));
 
     const commentsMap: Record<string, number> = {};
     if (commentsData) {
@@ -317,6 +343,130 @@ export default function FreedomWallModal({
     setCommentInputByPost((prev) => ({ ...prev, [postId]: '' }));
   };
 
+  const handleReportPost = async (post: PostItem) => {
+    const postId = String(post.id);
+    const userId = currentUserId;
+
+    if (!userId) {
+      Alert.alert('Not signed in', 'Please sign in to report a post.');
+      return;
+    }
+
+    const isReported = Boolean(reportedPost[postId]);
+
+    if (isReported) {
+      const { error: deleteError } = await supabase
+        .from('post_reports')
+        .delete()
+        .eq('post_id', post.id)
+        .eq('user_id', userId);
+
+      if (deleteError) {
+        console.warn('revoke report post error', deleteError);
+        Alert.alert('Unable to undo report', 'Please try again in a moment.');
+        return;
+      }
+
+      const optimisticCount = Math.max((reportCounts[postId] ?? 1) - 1, 0);
+      setReportCounts((prev) => ({ ...prev, [postId]: optimisticCount }));
+      setReportedPost((prev) => ({ ...prev, [postId]: false }));
+
+      const { data: reportRows, error: reportQueryError } = await supabase
+        .from('post_reports')
+        .select('id')
+        .eq('post_id', post.id);
+
+      if (!reportQueryError) {
+        setReportCounts((prev) => ({ ...prev, [postId]: reportRows?.length ?? optimisticCount }));
+      }
+
+      Alert.alert('Report removed', 'Your report has been withdrawn.');
+      return;
+    }
+
+    const optimisticCount = (reportCounts[postId] ?? 0) + 1;
+    setReportedPost((prev) => ({ ...prev, [postId]: true }));
+    setReportCounts((prev) => ({ ...prev, [postId]: optimisticCount }));
+
+    const { error } = await supabase
+      .from('post_reports')
+      .insert({ post_id: post.id, user_id: userId });
+
+    if (error) {
+      console.warn('report post error', error);
+      setReportedPost((prev) => ({ ...prev, [postId]: false }));
+      setReportCounts((prev) => ({ ...prev, [postId]: Math.max((prev[postId] ?? 1) - 1, 0) }));
+
+      if (error.code === '23505' || error.message.toLowerCase().includes('duplicate')) {
+        setReportedPost((prev) => ({ ...prev, [postId]: true }));
+        Alert.alert('Already reported', 'You already flagged this post once.');
+      } else {
+        Alert.alert('Report failed', 'Unable to report this post right now.');
+      }
+      return;
+    }
+
+    const { data: reportRows, error: reportQueryError } = await supabase
+      .from('post_reports')
+      .select('id')
+      .eq('post_id', post.id);
+
+    if (reportQueryError) {
+      console.warn('report count query error', reportQueryError);
+      Alert.alert('Reported', 'Thanks for flagging this post.');
+      return;
+    }
+
+    const reportCount = reportRows?.length ?? optimisticCount;
+    setReportedPost((prev) => ({ ...prev, [postId]: true }));
+    setReportCounts((prev) => ({ ...prev, [postId]: reportCount }));
+
+    if (reportCount >= 5) {
+      try {
+        const { error: deleteError } = await supabase
+          .from('posts')
+          .delete()
+          .eq('id', post.id);
+
+        if (deleteError) throw deleteError;
+
+        if (post.image_url) {
+          try {
+            const urlParts = post.image_url.split('/');
+            const imagesIndex = urlParts.indexOf('images');
+            const storagePath =
+              imagesIndex >= 0 ? urlParts.slice(imagesIndex + 1).join('/') : null;
+
+            if (storagePath) {
+              await supabase.storage.from('images').remove([storagePath]);
+            }
+          } catch (storageError) {
+            console.warn('delete image storage error', storageError);
+          }
+        }
+
+        setPosts((prev) => prev.filter((item) => String(item.id) !== postId));
+        setReportCounts((prev) => {
+          const next = { ...prev };
+          delete next[postId];
+          return next;
+        });
+        setReportedPost((prev) => {
+          const next = { ...prev };
+          delete next[postId];
+          return next;
+        });
+        Alert.alert('Post removed', 'This post has reached the report threshold and was deleted.');
+      } catch (error: any) {
+        console.warn('auto-delete reported post error', error);
+        Alert.alert('Report received', 'The post has enough reports, but cleanup could not finish automatically.');
+      }
+      return;
+    }
+
+    Alert.alert('Reported', 'Thanks for flagging this post.');
+  };
+
   const handleDeletePost = async (post: PostItem) => {
     const postId = String(post.id);
     const isOwner = Boolean(currentUserId && post.user_id === currentUserId);
@@ -380,6 +530,8 @@ export default function FreedomWallModal({
               delete next[postId];
               return next;
             });
+
+            onPostDeleted?.(post);
           } catch (error: any) {
             console.warn('delete post error', error);
             Alert.alert(
@@ -520,6 +672,7 @@ export default function FreedomWallModal({
                 const comments = commentsByPost[postId] ?? [];
                 const likeCount = likeCounts[postId] ?? 0;
                 const commentCount = commentCounts[postId] ?? 0;
+                const reportCount = reportCounts[postId] ?? 0;
 
                 const username = item.profiles?.username ?? 'Anon';
                 const avatarIndex = postAvatar[String(item.user_id)] ?? -1;
@@ -550,15 +703,30 @@ export default function FreedomWallModal({
                       </View>
 
                       <View style={styles.postBody}>
-                        <View style={styles.usernameRow}>
-                          <Text style={styles.username}>{username}</Text>
-                          {item.mood ? (
-                            <View style={styles.moodBadge}>
-                              <Image
-                                source={moodIconMap[item.mood] ?? moodIconMap.happy}
-                                style={styles.moodIcon}
-                              />
-                            </View>
+                        <View style={styles.postHeaderRow}>
+                          <View style={styles.usernameRow}>
+                            <Text style={styles.username}>{username}</Text>
+                            {item.mood ? (
+                              <View style={styles.moodBadge}>
+                                <Image
+                                  source={moodIconMap[item.mood] ?? moodIconMap.happy}
+                                  style={styles.moodIcon}
+                                />
+                              </View>
+                            ) : null}
+                          </View>
+
+                          {!readOnly ? (
+                            <Pressable
+                              onPress={() => handleReportPost(item)}
+                              style={[
+                                styles.reportButton,
+                                reportedPost[postId] && styles.reportButtonActive,
+                              ]}
+                              disabled={!currentUserId}
+                            >
+                              <Text style={styles.statsText}>⚑ {reportCount}</Text>
+                            </Pressable>
                           ) : null}
                         </View>
 
@@ -773,12 +941,20 @@ const styles = StyleSheet.create({
   },
   avatarInitial: { color: '#fff', fontWeight: '700' },
   postBody: { flex: 1 },
+  postHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 4,
+  },
   usernameRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 4,
+    marginBottom: 0,
     gap: 8,
     flexWrap: 'wrap',
+    flexShrink: 1,
   },
   username: { color: '#5e688b', fontWeight: '700' },
   moodBadge: {
@@ -810,13 +986,24 @@ const styles = StyleSheet.create({
   statsText: {
     color: '#5e688b',
     fontSize: 13,
+    fontWeight: '600',
+  },
+  reportButton: {
+    backgroundColor: '#fff2f1',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    alignSelf: 'flex-start',
+  },
+  reportButtonActive: {
+    backgroundColor: '#f7d7d7',
   },
   actionButton: {
     paddingVertical: 4,
     paddingHorizontal: 6,
   },
   actionText: {
-    color: '#f7a7a8',
+    color: '#5e688b',
     fontWeight: '600',
     fontSize: 13,
   },
@@ -826,7 +1013,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   deleteText: {
-    color: '#f7a7a8',
+    color: '#5e688b',
     fontWeight: '600',
     fontSize: 13,
   },
@@ -885,7 +1072,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   commentText: {
-    color: '#111827',
+    color: '#5e688b',
   },
   commentMeta: {
     color: '#94a3b8',

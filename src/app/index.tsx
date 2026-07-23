@@ -268,6 +268,10 @@ export default function HomeScreen() {
     setTambayCount((prev) => prev + 1);
   };
 
+  const handlePostDeleted = () => {
+    setTambayCount((prev) => Math.max(prev - 1, 0));
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.loadingContainer}>
@@ -344,7 +348,13 @@ export default function HomeScreen() {
         })}
       </View>
 
-      <FreedomWallModal visible={showWall} onClose={() => setShowWall(false)} currentLocation={currentLocation} radiusKm={1} />
+      <FreedomWallModal
+        visible={showWall}
+        onClose={() => setShowWall(false)}
+        currentLocation={currentLocation}
+        radiusKm={1}
+        onPostDeleted={handlePostDeleted}
+      />
       <LeavePostModal visible={showLeave} onClose={() => setShowLeave(false)} onPosted={handlePostSuccess} />
     </SafeAreaView>
   );

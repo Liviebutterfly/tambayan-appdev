@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View, Image } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { supabase } from '../../utils/supabase';
-import { haversineDistance } from '../../utils/helpers';
+import { avatarOptions, getAvatarIndexFromUrl } from '../../utils/helpers';
 
 type Props = {
   visible: boolean;
@@ -19,25 +19,25 @@ type MemoryPost = {
   user_id?: string;
   mood?: string | null;
   image_url?: string | null;
+  profiles?: { username?: string; avatar_url?: string };
 };
 
-type ClusteredMemory = {
-  id: string;
-  lat: number;
-  lng: number;
-  posts: MemoryPost[];
+const moodBackgroundMap: Record<string, string> = {
+  nostalgic: '#c1dae0',
+  peaceful: '#cef0db',
+  romantic: '#f7e4ea',
+  motivational: '#f2f0d8',
 };
-
-const defaultCenter = { lat: 14.5995, lng: 120.9842 };
-const CLUSTER_RADIUS_KM = 0.3;
 
 function parseLocation(location?: string | null) {
   if (!location) return null;
   const parts = String(location).split(',');
   if (parts.length < 2) return null;
-  const lat = parseFloat(parts[0]);
-  const lng = parseFloat(parts[1]);
+
+  const lat = Number.parseFloat(parts[0]);
+  const lng = Number.parseFloat(parts[1]);
   if (Number.isNaN(lat) || Number.isNaN(lng)) return null;
+
   return { lat, lng };
 }
 
@@ -45,6 +45,7 @@ export default function MemoryMapView({ visible, onClose, userId, currentLocatio
   const [posts, setPosts] = useState<MemoryPost[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeMapPostId, setActiveMapPostId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!visible || !userId) {
@@ -59,7 +60,7 @@ export default function MemoryMapView({ visible, onClose, userId, currentLocatio
 
       const { data, error } = await supabase
         .from('posts')
-        .select('*')
+        .select('*, profiles(username, avatar_url)')
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
         .limit(200);
@@ -79,62 +80,17 @@ export default function MemoryMapView({ visible, onClose, userId, currentLocatio
     loadPosts();
   }, [visible, userId]);
 
-  const clusters = useMemo<ClusteredMemory[]>(() => {
-    const grouped: ClusteredMemory[] = [];
+  const listPosts = posts
+    .slice()
+    .sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime());
 
-    posts.forEach((post) => {
-      const coords = parseLocation(post.location);
-      if (!coords) return;
-
-      const existing = grouped.find((cluster) => haversineDistance(cluster.lat, cluster.lng, coords.lat, coords.lng) <= CLUSTER_RADIUS_KM);
-
-      if (existing) {
-        existing.posts.push(post);
-        const nextLength = existing.posts.length;
-        existing.lat = (existing.lat * (nextLength - 1) + coords.lat) / nextLength;
-        existing.lng = (existing.lng * (nextLength - 1) + coords.lng) / nextLength;
-      } else {
-        grouped.push({
-          id: String(post.id),
-          lat: coords.lat,
-          lng: coords.lng,
-          posts: [post],
-        });
-      }
-    });
-
-    return grouped;
-  }, [posts]);
+  const activeMapPost = listPosts.find((post) => String(post.id) === activeMapPostId) ?? null;
 
   const mapHtml = useMemo(() => {
-    const initialCenter = clusters[0] ?? currentLocation ?? defaultCenter;
-    const clusterData = JSON.stringify(
-      clusters.map((cluster) => ({
-        id: cluster.id,
-        lat: cluster.lat,
-        lng: cluster.lng,
-        count: cluster.posts.length,
-        title: cluster.posts[0]?.content ?? 'Memory',
-        list: cluster.posts.map((post) => ({
-          content: post.content,
-          createdAt: post.created_at,
-          id: String(post.id),
-        })),
-      }))
-    );
+    if (!activeMapPost) return '';
 
-    const markerScript = clusters
-      .map((cluster) => {
-        const content = cluster.posts.length > 1
-          ? ['<div class="popup-card"><h4>', cluster.posts.length, ' memories here</h4><ul>', cluster.posts.map((post) => '<li>' + String(post.content).replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</li>').join(''), '</ul></div>'].join('')
-          : ['<div class="popup-card"><h4>Your memory</h4><p>', String(cluster.posts[0]?.content ?? 'Memory').replace(/</g, '&lt;').replace(/>/g, '&gt;'), '</p></div>'].join('');
-
-        return `
-          const marker = L.marker([${cluster.lat}, ${cluster.lng}], { icon: pinIcon }).addTo(map);
-          marker.bindPopup(${JSON.stringify(content)});
-        `;
-      })
-      .join('\n');
+    const coords = parseLocation(activeMapPost.location);
+    if (!coords) return '';
 
     return `<!DOCTYPE html>
       <html>
@@ -145,14 +101,6 @@ export default function MemoryMapView({ visible, onClose, userId, currentLocatio
           <style>
             html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #0f172a; }
             #map { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #0f172a; }
-            body { font-family: sans-serif; }
-            .leaflet-popup-content-wrapper { border-radius: 12px; }
-            .popup-card { min-width: 180px; max-width: 240px; }
-            .popup-card h4 { margin: 0 0 6px; font-size: 14px; color: #5e688b; }
-            .popup-card p { margin: 4px 0; color: #475569; font-size: 12px; line-height: 1.4; }
-            .popup-card .meta { color: #64748b; font-size: 11px; }
-            .popup-card ul { margin: 6px 0 0; padding-left: 16px; }
-            .popup-card li { margin-bottom: 4px; color: #334155; font-size: 12px; }
           </style>
         </head>
         <body>
@@ -167,26 +115,31 @@ export default function MemoryMapView({ visible, onClose, userId, currentLocatio
               doubleClickZoom: true,
               boxZoom: true,
               keyboard: true,
-            }).setView([${initialCenter.lat}, ${initialCenter.lng}], 13);
+            }).setView([${coords.lat}, ${coords.lng}], 14);
 
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
               attribution: '&copy; OpenStreetMap contributors',
             }).addTo(map);
 
-            const pinIcon = L.icon({
+            const markerIcon = L.icon({
               iconUrl: 'https://zsxdjjvohpivpwqitxrl.supabase.co/storage/v1/object/public/images/location-pin.png',
-              iconSize: [40, 40],
-              iconAnchor: [20, 20],
-              popupAnchor: [0, -24],
+              iconSize: [44, 44],
+              iconAnchor: [22, 22],
+              popupAnchor: [0, -44],
             });
 
-            const clusters = ${clusterData};
+            const marker = L.marker([${coords.lat}, ${coords.lng}], { icon: markerIcon }).addTo(map);
 
-            ${markerScript}
+            marker.bindPopup(${JSON.stringify('Post location')});
+            marker.openPopup();
+
+            setTimeout(() => {
+              map.invalidateSize();
+            }, 150);
           </script>
         </body>
       </html>`;
-  }, [clusters, currentLocation]);
+  }, [activeMapPost]);
 
   if (!visible) return null;
 
@@ -209,24 +162,80 @@ export default function MemoryMapView({ visible, onClose, userId, currentLocatio
           <View style={styles.stateBox}>
             <Text style={styles.stateText}>{error}</Text>
           </View>
-        ) : clusters.length === 0 ? (
+        ) : listPosts.length === 0 ? (
           <View style={styles.stateBox}>
             <Text style={styles.stateText}>No memories to show yet.</Text>
           </View>
         ) : (
-          <View style={styles.mapContainer}>
-            <WebView
-              source={{ html: mapHtml, baseUrl: 'https://unpkg.com' }}
-              style={styles.webView}
-              javaScriptEnabled
-              domStorageEnabled
-              originWhitelist={['*']}
-              mixedContentMode="always"
-              startInLoadingState
-              onError={() => setError('Unable to display the map right now.')}
-            />
+          <View style={styles.listContainer}>
+            {listPosts.map((post) => {
+              const mood = String(post.mood ?? 'nostalgic');
+              const username = post.profiles?.username ?? 'Anon';
+              const avatarIndex = getAvatarIndexFromUrl(post.profiles?.avatar_url ?? null) ?? -1;
+              const hasValidAvatar = avatarIndex >= 0 && avatarIndex < avatarOptions.length;
+
+              return (
+                <View
+                  key={String(post.id)}
+                  style={[
+                    styles.memoryCard,
+                    { backgroundColor: moodBackgroundMap[mood] ?? '#fff2f1' },
+                  ]}
+                >
+                  <View style={styles.memoryHeaderRow}>
+                    <View style={styles.memoryUserRow}>
+                      {hasValidAvatar ? (
+                        <Image source={avatarOptions[avatarIndex]} style={styles.memoryAvatar} />
+                      ) : (
+                        <View style={styles.memoryAvatarPlaceholder}>
+                          <Text style={styles.avatarInitial}>{String(username).charAt(0).toUpperCase()}</Text>
+                        </View>
+                      )}
+                      <Text style={styles.memoryUserName}>{username}</Text>
+                    </View>
+
+                    <Pressable
+                      onPress={() => setActiveMapPostId(String(post.id))}
+                      style={styles.locationButton}
+                    >
+                      <Text style={styles.locationButtonText}>View map location</Text>
+                    </Pressable>
+                  </View>
+
+                  <Text style={styles.memoryContent}>{post.content}</Text>
+                  <Text style={styles.memoryMeta}>
+                    Created: {post.created_at ? new Date(post.created_at).toLocaleString() : 'Unknown date'}
+                  </Text>
+                </View>
+              );
+            })}
           </View>
         )}
+
+        {activeMapPost ? (
+          <View style={styles.mapModalOverlay}>
+            <View style={styles.mapModalCard}>
+              <View style={styles.mapModalHeader}>
+                <Text style={styles.mapModalTitle}>Post location</Text>
+                <Pressable onPress={() => setActiveMapPostId(null)} style={styles.mapCloseButton}>
+                  <Text style={styles.mapCloseText}>Close</Text>
+                </Pressable>
+              </View>
+
+              <View style={styles.mapFrame}>
+                <WebView
+                  source={{ html: mapHtml }}
+                  style={styles.webView}
+                  javaScriptEnabled
+                  domStorageEnabled
+                  originWhitelist={['*']}
+                  mixedContentMode="always"
+                  startInLoadingState
+                />
+              </View>
+            </View>
+          </View>
+        ) : null}
       </View>
     </View>
   );
@@ -261,10 +270,110 @@ const styles = StyleSheet.create({
     color: '#fff2f1',
     fontWeight: '600',
   },
-  mapContainer: {
+  listContainer: {
     flex: 1,
-    minHeight: 320,
+    gap: 10,
+  },
+  memoryCard: {
+    borderRadius: 12,
+    padding: 12,
+  },
+  memoryHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  memoryUserRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 1,
+  },
+  memoryAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#374151',
+  },
+  memoryAvatarPlaceholder: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#374151',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  memoryUserName: {
+    color: '#5e688b',
+    fontWeight: '700',
+  },
+  avatarInitial: {
+    color: '#fff',
+    fontWeight: '700',
+  },
+  memoryContent: {
+    color: '#5e688b',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 6,
+  },
+  locationButton: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#5e688b',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    marginTop: 4,
+    marginBottom: 6,
+  },
+  locationButtonText: {
+    color: '#fff2f1',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  memoryMeta: {
+    color: '#5e688b',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  mapModalOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(15, 23, 42, 0.55)',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  mapModalCard: {
+    backgroundColor: '#5e688b',
     borderRadius: 16,
+    padding: 12,
+    maxHeight: '72%',
+  },
+  mapModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  mapModalTitle: {
+    color: '#fff2f1',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  mapCloseButton: {},
+  mapCloseText: {
+    color: '#fff2f1',
+    fontWeight: '700',
+  },
+  mapFrame: {
+    width: '100%',
+    height: 280,
+    borderRadius: 12,
     overflow: 'hidden',
     backgroundColor: '#0f172a',
   },
